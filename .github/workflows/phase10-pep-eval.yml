@@ -1,0 +1,159 @@
+name: Phase 10 — PEP Graph Eval & Adversarial Corpus
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/ai-orchestrator/**'
+      - 'packages/pep-client/**'
+      - 'infra/migrations/0021_*'
+      - '.github/workflows/phase10-pep-eval.yml'
+  pull_request:
+    paths:
+      - 'apps/ai-orchestrator/**'
+      - 'packages/pep-client/**'
+
+concurrency:
+  group: pep-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── TypeScript typecheck + unit tests ─────────────────────────────────────
+  typecheck:
+    name: Typecheck & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r lint
+
+  # ── AST Validator unit tests ──────────────────────────────────────────────
+  ast-validator-tests:
+    name: AST Validator unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+      - name: Run AST validator tests
+        working-directory: apps/ai-orchestrator
+        run: pnpm test -- --testPathPattern=ast-validator
+
+  # ── Integration eval set (requires real infra) ────────────────────────────
+  pep-eval:
+    name: PEP golden-set eval
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: governance
+          POSTGRES_USER: app_login_user
+          POSTGRES_PASSWORD: dev_password
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s
+
+    env:
+      DATABASE_URL: postgres://app_login_user:dev_password@localhost:5432/governance
+      REDIS_URL: redis://localhost:6379
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      RETRIEVAL_SERVICE_ADDR: http://localhost:8083
+      PROXY_HOST: localhost
+      PROXY_PORT: 5433
+      AI_ORCHESTRATOR_ADDR: http://localhost:8084
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run migrations
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          migrate -path infra/migrations -database "$DATABASE_URL" up
+
+      - name: Run PEP eval suite
+        working-directory: apps/ai-orchestrator
+        run: pnpm test:eval
+        env:
+          PEP_EVAL_PASS_THRESHOLD: "0.90"  # 90% pass rate required
+
+      - name: Run adversarial corpus
+        working-directory: apps/ai-orchestrator
+        run: pnpm test:adversarial
+        # 100% of adversarial prompts must be blocked by sanitizer or validator
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pep-eval-results-${{ github.sha }}
+          path: apps/ai-orchestrator/eval-results/
+
+  # ── pep-client SDK build ──────────────────────────────────────────────────
+  pep-client-build:
+    name: pep-client build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+      - name: Build pep-client
+        working-directory: packages/pep-client
+        run: pnpm build
+
+  # ── Migration smoke test ──────────────────────────────────────────────────
+  migration-smoke:
+    name: Migration 0021 smoke test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: governance
+          POSTGRES_USER: app_login_user
+          POSTGRES_PASSWORD: dev_password
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - name: Install golang-migrate
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+      - name: Apply all migrations
+        run: migrate -path infra/migrations -database "postgres://app_login_user:dev_password@localhost:5432/governance?sslmode=disable" up
+      - name: Verify tables exist
+        run: |
+          psql "postgres://app_login_user:dev_password@localhost:5432/governance?sslmode=disable" -c \
+            "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('ai_pep_sessions','saved_questions','pep_evals','pep_result_cache') ORDER BY table_name;"
+      - name: Test rollback (dev only)
+        run: migrate -path infra/migrations -database "postgres://app_login_user:dev_password@localhost:5432/governance?sslmode=disable" down 1

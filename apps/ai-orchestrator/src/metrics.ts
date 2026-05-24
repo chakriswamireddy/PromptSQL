@@ -65,3 +65,55 @@ export const approvalActionsTotal = new Counter({
   labelNames: ['tenant_id', 'action'] as const,
   registers: [registry],
 });
+
+// ─── PEP graph metrics ────────────────────────────────────────────────────────
+
+export const pepGraphRunsTotal = new Counter({
+  name: 'pep_graph_runs_total',
+  help: 'Total PEP graph run attempts',
+  labelNames: ['tenant_id', 'outcome'] as const,
+  registers: [registry],
+});
+
+export const pepGraphDurationSeconds = new Histogram({
+  name: 'pep_graph_duration_seconds',
+  help: 'End-to-end PEP graph wall-clock time',
+  labelNames: ['tenant_id', 'outcome'] as const,
+  buckets: [0.2, 0.5, 1, 2, 3, 5, 10, 20, 30],
+  registers: [registry],
+});
+
+export const pepAstValidationFailuresTotal = new Counter({
+  name: 'pep_ast_validation_failures_total',
+  help: 'AST validation rejections by reason',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
+export const pepCostGateRejectionsTotal = new Counter({
+  name: 'pep_cost_gate_rejections_total',
+  help: 'Queries rejected by cost gate',
+  labelNames: ['tenant_id'] as const,
+  registers: [registry],
+});
+
+export const pepRowsStreamedTotal = new Counter({
+  name: 'pep_rows_streamed_total',
+  help: 'Total result rows streamed to users',
+  labelNames: ['tenant_id'] as const,
+  registers: [registry],
+});
+
+export const pepFeedbackTotal = new Counter({
+  name: 'pep_feedback_total',
+  help: 'User thumbs-up / thumbs-down feedback',
+  labelNames: ['tenant_id', 'sentiment'] as const,
+  registers: [registry],
+});
+
+export const pepDrafterRetriesTotal = new Counter({
+  name: 'pep_drafter_retries_total',
+  help: 'SQL drafter retry attempts after validator rejection',
+  labelNames: ['tenant_id'] as const,
+  registers: [registry],
+});

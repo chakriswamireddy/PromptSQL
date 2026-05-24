@@ -17,6 +17,7 @@ import { createClient } from 'redis';
 import { initialize as initUnleash } from 'unleash-client';
 import { registry } from './metrics';
 import { buildPapRouter } from './routes/pap';
+import { buildPepRouter } from './routes/pep';
 import { buildHealthRouter } from './routes/health';
 
 async function main() {
@@ -28,8 +29,11 @@ async function main() {
   });
   await new Promise<void>((res) => unleash.on('synchronized', res));
 
-  if (!unleash.isEnabled('ai-pap-graph')) {
-    console.log('Feature flag ai-pap-graph is disabled — exiting cleanly.');
+  const papEnabled = unleash.isEnabled('ai-pap-graph');
+  const pepEnabled = unleash.isEnabled('ai-pep-graph');
+
+  if (!papEnabled && !pepEnabled) {
+    console.log('Both ai-pap-graph and ai-pep-graph are disabled — exiting cleanly.');
     process.exit(0);
   }
 
@@ -55,6 +59,7 @@ async function main() {
 
   await app.register(buildHealthRouter);
   await app.register(buildPapRouter, { db, redis, cfg, unleash });
+  await app.register(buildPepRouter, { db, redis, cfg, unleash });
 
   // ─── Start ───────────────────────────────────────────────────────────────
   const port = parseInt(cfg.HTTP_ADDR.replace(':', ''), 10) || 8084;

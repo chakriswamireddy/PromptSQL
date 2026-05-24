@@ -1,10 +1,10 @@
 # Phase Implementation Progress
 
-> Last updated: 2026-05-24 (Phase 9 impl complete)  
+> Last updated: 2026-05-24 (Phase 10 impl complete)  
 > Platform: AI-Native Authorization & Retrieval Governance Platform  
 > Total phases: 17 (Phase 0 – Phase 16)  
 > Plan status: ✅ All 17 phase plan files complete  
-> Implementation status: ✅ Phases 0–8 complete; ✅ Phase 9 complete; 🔲 Phase 10 next
+> Implementation status: ✅ Phases 0–9 complete; ✅ Phase 10 complete; 🔲 Phase 11 next
 
 ---
 
@@ -34,8 +34,8 @@
 | 7 | Schema Catalog & Crawler | [07-schema-catalog-crawler.md](07-schema-catalog-crawler.md) | ✅ | ✅ | Backend Lead | 2 | P1, P5, P6 | Yes | 2026-05-24 impl complete; migration 0018 (schema_metadata extensions + crawl_runs + inferred_relationships + embedding_queue + RLS FORCE), apps/schema-crawler (connector, differ, classifier, embedding worker, scheduler, API), EmbeddingProvider abstraction (OpenAI + noop), 8 Prometheus alert rules, Helm chart, CI workflow, admin-console classifications page |
 | 8 | Permission-Aware Retrieval | [08-permission-aware-retrieval.md](08-permission-aware-retrieval.md) | ✅ | ✅ | ML Engineer | 2 | P3, P6, P7 | Yes | 2026-05-24 impl complete; migration 0019 (corpora+tenant_vector_stores+llm_provider_routes+tenant_denylist), apps/retrieval-service (snapshot builder, doc RAG, injection defense, LLM router, Redis cache, quarantine sweeper), packages/retrieval TS SDK, api-gateway /v1/retrieval/* proxy, 8 Prometheus alert rules, Helm chart (HPA/PDB/NetworkPolicy), CI workflow |
 | 9 | AI PAP Graph | [09-ai-pap-graph.md](09-ai-pap-graph.md) | ✅ | ✅ | ML Engineer | 2 | P3, P4, P8 | Yes | 2026-05-24 impl complete; migration 0020 (ai_sessions+ai_evals+ai_token_budgets), apps/ai-orchestrator (Node.js+Fastify+LangGraph, 8 PAP nodes, constrained decoding Anthropic/OpenAI, SSE streaming, human approval, idempotency, token budgets), packages/pap-client TS SDK, admin-console /policies/draft page, 8 Prometheus alert rules, Helm chart (HPA/PDB/NetworkPolicy) |
-| 10 | AI PEP Graph | [10-ai-pep-graph.md](10-ai-pep-graph.md) | ✅ | 🔲 | ML Engineer | 2 | P3, P6, P8, P9 | Yes | LangGraph PEP, AST-first SQL, chat UX — 🔲 Phase 10 next |
-| 11 | Multi-Database Support | [11-multi-database.md](11-multi-database.md) | ✅ | 🔲 | Backend Lead | 4 | P6, P7 | No | MySQL, SQL Server, Oracle (Wave A); Snowflake, BigQuery, Databricks (Wave B) |
+| 10 | AI PEP Graph | [10-ai-pep-graph.md](10-ai-pep-graph.md) | ✅ | ✅ | ML Engineer | 2 | P3, P6, P8, P9 | Yes | 2026-05-24 impl complete; migration 0021 (ai_pep_sessions+saved_questions+pep_evals+pep_result_cache), 8 PEP graph nodes (sanitizer+permission-resolver+retriever+sql-drafter+ast-validator+cost-estimator+proxy-executor+result-formatter), Calcite-compatible AST schema, constrained LLM AST provider (Anthropic tool_use+OpenAI fallback), retry loop, packages/pep-client TS SDK, admin-console /chat page, api-gateway /v1/ai/pep/* routes, 7 Prometheus metrics, CI eval+adversarial workflow |
+| 11 | Multi-Database Support | [11-multi-database.md](11-multi-database.md) | ✅ | 🔲 | Backend Lead | 4 | P6, P7 | No | MySQL, SQL Server, Oracle (Wave A); Snowflake, BigQuery, Databricks (Wave B) — 🔲 Phase 11 next |
 | 12 | Real-Time Event Stream | [12-realtime-stream.md](12-realtime-stream.md) | ✅ | 🔲 | Backend Lead | 2 | P5, P4, P2 | No | WebSocket live feed, webhooks, DLQ, saved-query scheduler |
 | 13 | Anomaly Detection & Risk ABAC | [13-anomaly-risk-abac.md](13-anomaly-risk-abac.md) | ✅ | 🔲 | ML Engineer | 4 | P5, P3, P12 | No | Flink V1 baseline, riskScore ABAC variable, calibration |
 | 14 | Auto-Response & Break-Glass | [14-auto-response-stepup.md](14-auto-response-stepup.md) | ✅ | 🔲 | Security Engineer | 2 | P13, P12, P6, P2 | No | Playbooks, step-up MFA, mid-flight masking, break-glass |

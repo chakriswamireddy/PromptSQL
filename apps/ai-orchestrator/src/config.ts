@@ -31,10 +31,25 @@ const ConfigSchema = z.object({
   // PDP gRPC
   PDP_ADDR: z.string().default('pdp:9090'),
 
-  // Graph limits
+  // Internal service addresses (PEP graph)
+  RETRIEVAL_SERVICE_ADDR: z.string().default('http://retrieval-service:8083'),
+  PROXY_HOST: z.string().default('proxy'),
+  PROXY_PORT: z.coerce.number().default(5433),
+  API_GATEWAY_ADDR: z.string().default('http://api-gateway:8080'),
+
+  // Graph limits — PAP
   GRAPH_WALL_CLOCK_BUDGET_MS: z.coerce.number().default(30_000),
   DRAFT_CACHE_TTL_SEC: z.coerce.number().default(3600),
   EXPLAINER_CACHE_TTL_SEC: z.coerce.number().default(7200),
+
+  // Graph limits — PEP
+  PEP_WALL_CLOCK_BUDGET_MS: z.coerce.number().default(30_000),
+  PEP_MAX_ROWS_DEFAULT: z.coerce.number().default(1000),
+  PEP_MAX_COST_DEFAULT: z.coerce.number().default(100_000),   // EXPLAIN cost units
+  PEP_MAX_PLAN_ROWS_DEFAULT: z.coerce.number().default(1_000_000),
+  PEP_RESULT_CACHE_TTL_SEC: z.coerce.number().default(30),
+  PEP_DRAFTER_MAX_RETRIES: z.coerce.number().default(2),
+  PEP_DEFAULT_SQL_MODEL: z.string().default('claude-sonnet-4-6'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

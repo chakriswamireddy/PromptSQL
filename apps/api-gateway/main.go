@@ -290,6 +290,42 @@ func main() {
 		log.Info().Str("upstream", retrievalBase).Msg("permission-aware-retrieval enabled — /v1/retrieval/* routes registered")
 	}
 
+	// ── AI PEP Graph routes (Phase 10 — NL → Safe SQL) ───────────────────────
+	if ff.IsEnabled("ai-pep-graph") {
+		orchestratorBase := getEnvDefault("AI_ORCHESTRATOR_ADDR", "http://ai-orchestrator:8084")
+		orchProxy := newReverseProxy(orchestratorBase)
+
+		// Forward session + db-token headers so the orchestrator knows who is asking.
+		forwardPep := func(h http.Handler) http.Handler {
+			return authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sess := auth.SessionFromContext(r.Context())
+				if sess == nil {
+					http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
+					return
+				}
+				r.Header.Set("X-Tenant-Id", sess.TenantID)
+				r.Header.Set("X-User-Id", sess.UserID)
+				// X-DB-Token passed through from client (already validated by proxy on use)
+				h.ServeHTTP(w, r)
+			}))
+		}
+
+		// SSE — disable read/write timeouts for the streaming endpoint
+		mux.Handle("POST /v1/ai/pep/ask",                         forwardPep(orchProxy))
+		mux.Handle("GET /v1/ai/pep/sessions/{id}",                forwardPep(orchProxy))
+		mux.Handle("POST /v1/ai/pep/feedback",                    forwardPep(orchProxy))
+		mux.Handle("GET /v1/ai/pep/saved-questions",              forwardPep(orchProxy))
+		mux.Handle("POST /v1/ai/pep/saved-questions",             forwardPep(orchProxy))
+		mux.Handle("POST /v1/ai/pep/saved-questions/{id}/run",    forwardPep(orchProxy))
+
+		// PAP routes (Phase 9) — also forward via ai-orchestrator if not already registered
+		mux.Handle("POST /v1/ai/pap/draft",   forwardPep(orchProxy))
+		mux.Handle("POST /v1/ai/pap/approve", forwardPep(orchProxy))
+		mux.Handle("POST /v1/ai/pap/explain", forwardPep(orchProxy))
+
+		log.Info().Str("upstream", orchestratorBase).Msg("ai-pep-graph enabled — /v1/ai/pep/* routes registered")
+	}
+
 	// Catch-all for unimplemented v1 routes.
 	mux.HandleFunc("GET /v1/", handleNotImplemented)
 
