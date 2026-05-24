@@ -1,0 +1,78 @@
+services:
+  - name: api-gateway
+    dir: apps/api-gateway
+    language: go
+    owner: platform-team
+    oncall: platform-team
+    runbook: docs/runbooks/api-gateway.md
+    slo:
+      availability: 99.9
+      latency_p99_ms: 500
+    ports:
+      http: 8080
+      grpc: 9090
+      metrics: 9091
+
+  - name: pdp
+    dir: apps/pdp
+    language: go
+    owner: backend-lead
+    oncall: backend-team
+    runbook: docs/runbooks/pdp.md
+    slo:
+      availability: 99.99
+      latency_p99_ms: 50
+    ports:
+      grpc: 9092
+      metrics: 9093
+
+  - name: proxy
+    dir: apps/proxy
+    language: go
+    owner: backend-lead
+    oncall: backend-team
+    runbook: docs/runbooks/proxy.md
+    slo:
+      availability: 99.9
+      latency_p99_ms: 200
+    ports:
+      postgres_wire: 5433
+      metrics: 9094
+
+  - name: schema-crawler
+    dir: apps/schema-crawler
+    language: go
+    owner: backend-lead
+    oncall: backend-team
+    runbook: docs/runbooks/schema-crawler.md
+    slo:
+      availability: 99.5
+      latency_p99_ms: 5000
+    ports:
+      http: 8082
+      metrics: 9095
+
+  - name: ai-orchestrator
+    dir: apps/ai-orchestrator
+    language: python
+    owner: ml-engineer
+    oncall: ml-team
+    runbook: docs/runbooks/ai-orchestrator.md
+    slo:
+      availability: 99.0
+      latency_p99_ms: 10000
+    ports:
+      http: 8083
+      metrics: 9096
+
+  - name: admin-console
+    dir: apps/admin-console
+    language: typescript
+    owner: frontend-lead
+    oncall: platform-team
+    runbook: docs/runbooks/admin-console.md
+    slo:
+      availability: 99.5
+      latency_p99_ms: 1000
+    ports:
+      http: 3000

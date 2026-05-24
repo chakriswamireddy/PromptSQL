@@ -1,0 +1,68 @@
+replicaCount: 1
+
+image:
+  repository: governance-platform/audit-chain-verifier
+  pullPolicy: IfNotPresent
+  tag: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9104"
+  prometheus.io/path: "/metrics"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Only one replica needed; coordinated via PG advisory lock.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 0
+
+networkPolicy:
+  enabled: true
+  egressPorts:
+    - 5432   # PostgreSQL
+    - 443    # S3 HTTPS
+    - 9000   # MinIO HTTP (dev)
+    - 4317   # OTLP gRPC
+    - 4242   # Unleash
+
+env:
+  ENVIRONMENT: production
+  S3_REGION: us-east-1
+  S3_FORCE_PATH_STYLE: "false"
+  S3_BUCKET: audit-worm-prod
+  DAILY_SAMPLE_RATE: "0.10"
+  METRICS_ADDR: ":9104"
+
+envFromSecrets:
+  - name: DATABASE_URL
+    secretName: postgres-credentials
+    key: url
+  - name: UNLEASH_API_TOKEN
+    secretName: unleash-token
+    key: token
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 9104
+  initialDelaySeconds: 10
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 9104
+  initialDelaySeconds: 5
+  periodSeconds: 15

@@ -1,0 +1,40 @@
+{
+  "name": "Governance Platform",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" },
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/terraform:1": { "version": "1.8" },
+    "ghcr.io/devcontainers/features/vault-client:1": {}
+  },
+  "postCreateCommand": "bash scripts/bootstrap.sh",
+  "forwardPorts": [3000, 3001, 4242, 5432, 6379, 8080, 8200, 9090, 16686],
+  "portsAttributes": {
+    "3000": { "label": "Admin Console" },
+    "3001": { "label": "Grafana" },
+    "4242": { "label": "Unleash" },
+    "5432": { "label": "Postgres" },
+    "8080": { "label": "API Gateway" },
+    "8200": { "label": "Vault" },
+    "9090": { "label": "Prometheus" },
+    "16686": { "label": "Jaeger" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "hashicorp.terraform",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "go.formatTool": "gofmt",
+        "[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" }
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+set -e
+
+# Gitleaks — detect secrets before they leave the workstation
+if command -v gitleaks > /dev/null 2>&1; then
+  gitleaks protect --staged --no-banner
+fi
+
+# Go formatting
+if command -v gofmt > /dev/null 2>&1; then
+  UNFORMATTED=$(gofmt -l . 2>/dev/null | grep -v vendor || true)
+  if [ -n "$UNFORMATTED" ]; then
+    echo "ERROR: unformatted Go files (run gofmt -w .):"
+    echo "$UNFORMATTED"
+    exit 1
+  fi
+fi
+
+# TS formatting (only staged files)
+if command -v pnpm > /dev/null 2>&1; then
+  pnpm exec prettier --check --ignore-unknown $(git diff --cached --name-only --diff-filter=ACMR | tr '\n' ' ') 2>/dev/null || true
+fi

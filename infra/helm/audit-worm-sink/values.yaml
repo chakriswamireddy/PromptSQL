@@ -1,0 +1,79 @@
+replicaCount: 2
+
+image:
+  repository: governance-platform/audit-worm-sink
+  pullPolicy: IfNotPresent
+  tag: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # IRSA: S3 PutObject + ObjectLock permissions on audit-worm bucket
+    eks.amazonaws.com/role-arn: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9103"
+  prometheus.io/path: "/metrics"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  egressPorts:
+    - 9092   # Kafka
+    - 443    # S3 / MinIO HTTPS
+    - 9000   # MinIO HTTP (dev)
+    - 4317   # OTLP gRPC
+    - 4242   # Unleash
+
+env:
+  ENVIRONMENT: production
+  KAFKA_TOPIC_POLICY: audit.policy.prod
+  KAFKA_TOPIC_ACCESS: audit.access.prod
+  KAFKA_TOPIC_SYSTEM: audit.system.prod
+  KAFKA_CONSUMER_GROUP: audit-worm-sink
+  S3_REGION: us-east-1
+  S3_FORCE_PATH_STYLE: "false"
+  S3_BUCKET: audit-worm-prod
+  WORM_RETENTION_YEARS: "7"
+  FLUSH_INTERVAL: "1h"
+  METRICS_ADDR: ":9103"
+
+envFromSecrets:
+  - name: KAFKA_BROKERS
+    secretName: audit-kafka-credentials
+    key: brokers
+  - name: UNLEASH_API_TOKEN
+    secretName: unleash-token
+    key: token
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 9103
+  initialDelaySeconds: 10
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 9103
+  initialDelaySeconds: 5
+  periodSeconds: 10

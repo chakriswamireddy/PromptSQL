@@ -1,0 +1,26 @@
+go 1.22
+
+use (
+	./apps/api-gateway
+	./apps/pdp
+	./apps/proxy
+	./apps/proxy-rls-syncer
+	./apps/schema-crawler
+	./apps/audit-clickhouse-sink
+	./apps/audit-worm-sink
+	./apps/audit-chain-verifier
+	./apps/retrieval-service
+	./pkg/auth
+	./pkg/audit
+	./pkg/calcitepb
+	./pkg/db
+	./pkg/telemetry
+	./pkg/featureflags
+	./pkg/logging
+	./pkg/grpc
+	./pkg/migrate
+	./pkg/testdb
+	./pkg/pdpv1
+	./packages/policy-engine
+	./scripts/migrate
+)

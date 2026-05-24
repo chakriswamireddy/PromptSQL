@@ -1,0 +1,205 @@
+name: admin-console
+
+on:
+  push:
+    paths:
+      - "apps/admin-console/**"
+      - "apps/api-gateway/internal/admin/**"
+      - "apps/api-gateway/internal/outbox/**"
+      - "migrations/0015_*.sql"
+      - ".github/workflows/admin-console.yml"
+  pull_request:
+    paths:
+      - "apps/admin-console/**"
+      - "apps/api-gateway/internal/admin/**"
+      - "apps/api-gateway/internal/outbox/**"
+      - "migrations/0015_*.sql"
+
+env:
+  NODE_VERSION: "20"
+  GO_VERSION: "1.22"
+
+jobs:
+  # ── Admin console ─────────────────────────────────────────────────────────
+  admin-console-lint-typecheck:
+    name: "Admin console: lint + typecheck"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/admin-console
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+  admin-console-test:
+    name: "Admin console: unit tests"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/admin-console
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+  admin-console-build:
+    name: "Admin console: production build"
+    runs-on: ubuntu-latest
+    needs: [admin-console-lint-typecheck, admin-console-test]
+    defaults:
+      run:
+        working-directory: apps/admin-console
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+        env:
+          NEXT_PUBLIC_API_URL: "http://localhost:8080"
+
+  # ── API Gateway admin BFF ─────────────────────────────────────────────────
+  api-gateway-admin:
+    name: "API Gateway admin: build + vet + test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api-gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "apps/api-gateway/go.sum"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./internal/admin/... ./internal/outbox/... -v -timeout 60s
+
+  # ── Migration guard ───────────────────────────────────────────────────────
+  migration-up-check:
+    name: "Migration 0015: up/down smoke test"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: governance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install golang-migrate
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.0
+
+      - name: Run migrations up
+        run: |
+          migrate \
+            -path migrations \
+            -database "postgres://postgres:postgres@localhost:5432/governance_test?sslmode=disable" \
+            up
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/governance_test?sslmode=disable"
+
+      - name: Verify 0015 tables exist
+        run: |
+          psql "postgres://postgres:postgres@localhost:5432/governance_test?sslmode=disable" \
+            -c "SELECT COUNT(*) FROM outbox_events; SELECT COUNT(*) FROM personas; SELECT COUNT(*) FROM policy_diff_reports;"
+
+  # ── Simulator property test ───────────────────────────────────────────────
+  simulator-property-test:
+    name: "Simulator: decisions match PDP runtime (1000-case corpus)"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: governance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install golang-migrate
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.0
+
+      - name: Run all migrations
+        run: |
+          migrate \
+            -path migrations \
+            -database "postgres://postgres:postgres@localhost:5432/governance_test?sslmode=disable" \
+            up
+
+      - name: Run simulator property tests
+        run: |
+          cd apps/api-gateway
+          go test ./internal/admin/... -run TestSimulatorDecisionsMatchPDP -v -count=1
+        env:
+          TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/governance_test?sslmode=disable"

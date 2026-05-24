@@ -1,0 +1,129 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: schema-crawler-alerts
+  namespace: monitoring
+  labels:
+    app: schema-crawler
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── SLO alerts ─────────────────────────────────────────────────────────────
+    - name: schema-crawler.slos
+      interval: 60s
+      rules:
+
+        # Crawler has failed 2+ consecutive runs for any data source.
+        - alert: CrawlerConsecutiveFailures
+          expr: |
+            increase(crawler_run_total{result="failed"}[2h]) >= 2
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Schema crawler has failed {{ $value }} runs in the past 2 hours"
+            description: "The schema crawler is encountering repeated failures. Connectivity to target databases or Vault may be degraded."
+
+        # Embedding API errors spike — embeddings will fall behind.
+        - alert: EmbeddingErrorRateHigh
+          expr: |
+            rate(embedding_errors_total[10m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Embedding errors {{ $value }}/s over 10 minutes"
+            description: "The embedding provider is returning errors. Columns will not receive vectors. Check OpenAI quota and connectivity."
+
+        # Embedding queue has been backed up for more than 1 hour.
+        - alert: EmbeddingQueueStale
+          expr: |
+            sum(embedding_queue_depth) > 0
+          for: 60m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Embedding queue has {{ $value }} pending items for > 1 hour"
+            description: "The embedding worker is not draining the queue. Possible provider outage or budget cap hit."
+
+        # Quarantine count too high for too long — steward is not triaging.
+        - alert: QuarantineBacklogHigh
+          expr: |
+            sum(catalog_quarantined_columns) > 500
+          for: 24h
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "{{ $value }} columns have been quarantined for > 24 hours"
+            description: "Stewards have not classified a large number of quarantined columns. AI retrieval may be degraded. Open the Classifications page."
+
+        # Embedding cost spike — budget alert.
+        - alert: EmbeddingCostSpike
+          expr: |
+            increase(embedding_cost_usd_total[1h]) > 5
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Embedding spend {{ $value | humanize }} USD in the last hour"
+            description: "Embedding costs have spiked. A large number of new or changed columns may have been discovered. Check per-tenant budget caps."
+
+        # Crawl run duration too long (schema introspection hanging).
+        - alert: CrawlerRunSlow
+          expr: |
+            histogram_quantile(0.95,
+              rate(crawler_run_duration_seconds_bucket[30m])
+            ) > 300
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Crawler p95 run duration {{ $value | humanizeDuration }} > 5 minutes"
+            description: "Schema introspection is taking longer than expected. Check target database load and connectivity."
+
+        # Crawler has not run at all for a long time (scheduler died?).
+        - alert: CrawlerSilent
+          expr: |
+            increase(crawler_run_total[8h]) == 0
+          for: 0m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "No crawler runs recorded in the past 8 hours"
+            description: "The schema crawler scheduler may have crashed or the feature flag was disabled. Schemas may be stale."
+
+        # Classification coverage degraded (many unclassified columns).
+        - alert: ClassificationCoverageLow
+          expr: |
+            avg(catalog_classified_columns_ratio) < 0.5
+          for: 24h
+          labels:
+            severity: info
+            team: platform
+          annotations:
+            summary: "Average classification coverage {{ $value | humanizePercentage }} < 50%"
+            description: "Less than half of discovered columns have been classified. Pattern rules or steward triage may need attention."
+
+    # ── Recording rules ────────────────────────────────────────────────────────
+    - name: schema-crawler.recording
+      interval: 120s
+      rules:
+        - record: crawler:success_rate:rate1h
+          expr: |
+            sum(rate(crawler_run_total{result="success"}[1h]))
+            /
+            sum(rate(crawler_run_total[1h]))
+
+        - record: crawler:columns_new_rate:rate1h
+          expr: sum(rate(crawler_columns_discovered_total{kind="new"}[1h]))
+
+        - record: embedding:queue_total:gauge
+          expr: sum(embedding_queue_depth)

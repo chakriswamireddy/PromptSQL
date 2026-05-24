@@ -1,0 +1,130 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pdp-alerts
+  namespace: monitoring
+  labels:
+    app: pdp
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── SLO alerts ─────────────────────────────────────────────────────────────
+    - name: pdp.slos
+      interval: 30s
+      rules:
+
+        # P99 decision latency > 25 ms over 5 minutes (cold path SLO breach).
+        - alert: PDPHighDecisionLatencyP99
+          expr: |
+            histogram_quantile(0.99,
+              rate(pdp_decision_duration_seconds_bucket{cache="miss"}[5m])
+            ) > 0.025
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PDP cold-path p99 latency {{ $value | humanizeDuration }} > 25 ms"
+            description: "PDP decision p99 latency on cache miss is above 25 ms for 5 minutes. Check PostgreSQL query performance and policy count."
+
+        # P99 decision latency > 5 ms for cached decisions (L1/L2 path SLO breach).
+        - alert: PDPHighCachedDecisionLatencyP99
+          expr: |
+            histogram_quantile(0.99,
+              rate(pdp_decision_duration_seconds_bucket{cache=~"L1|L2"}[5m])
+            ) > 0.005
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PDP cached-path p99 latency {{ $value | humanizeDuration }} > 5 ms"
+            description: "Cache hit latency has degraded. Check Redis health and L1 cache eviction rate."
+
+        # Cache miss rate > 50% over 5 minutes (possible stampede or invalidation storm).
+        - alert: PDPHighCacheMissRate
+          expr: |
+            rate(pdp_decision_total{cache="miss"}[5m])
+            /
+            rate(pdp_decision_total[5m])
+            > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PDP cache miss rate {{ $value | humanizePercentage }} > 50%"
+            description: "More than half of PDP decisions are hitting the cold path. Check for invalidation storms or a Redis outage."
+
+        # Policy compile error occurred.
+        - alert: PDPPolicyCompileError
+          expr: increase(pdp_compile_panic_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "PDP detected {{ $value }} policy compile error(s)"
+            description: "One or more policies failed to compile. These policies are SKIPPED (not deny-all). Check admin console for the affected tenant."
+
+        # Redis is down — L2 cache unavailable.
+        - alert: PDPRedisDown
+          expr: pdp_redis_down == 1
+          for: 2m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PDP cannot reach Redis L2 cache"
+            description: "PDP is operating on L1 cache only. All cache misses fall through to PostgreSQL. Investigate Redis cluster health."
+
+        # Zero decisions recorded — service may be down or feature flag disabled.
+        - alert: PDPNoDecisions
+          expr: rate(pdp_decision_total[5m]) == 0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PDP has recorded zero decisions for 10 minutes"
+            description: "No authorization decisions are being made. Verify the pdp-v1 feature flag is enabled and callers are reachable."
+
+        # High deny rate — could indicate a policy misconfiguration.
+        - alert: PDPHighDenyRate
+          expr: |
+            rate(pdp_decision_total{effect="DENY"}[5m])
+            /
+            rate(pdp_decision_total[5m])
+            > 0.95
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PDP deny rate {{ $value | humanizePercentage }} > 95%"
+            description: "Almost all decisions are DENY. Check for accidental policy removal or a broken policy set version."
+
+        # Active policy count drops to zero for any tenant.
+        - alert: PDPNoPoliciesForTenant
+          expr: min by (tenant) (pdp_active_policies_total) == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "PDP has zero active policies for tenant {{ $labels.tenant }}"
+            description: "A tenant has no active policies. All decisions will default-deny until policies are restored."
+
+    # ── Recording rules ────────────────────────────────────────────────────────
+    - name: pdp.recording
+      interval: 60s
+      rules:
+        - record: pdp:decision_cache_hit_ratio:rate5m
+          expr: |
+            sum(rate(pdp_decision_total{cache=~"L1|L2"}[5m]))
+            /
+            sum(rate(pdp_decision_total[5m]))
+
+        - record: pdp:decision_rate:rate5m
+          expr: sum(rate(pdp_decision_total[5m])) by (effect, tenant)

@@ -1,0 +1,181 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: phase1-database-alerts
+  namespace: monitoring
+  labels:
+    app: governance-platform
+    phase: "1"
+spec:
+  groups:
+
+    # ── Replication ────────────────────────────────────────────────────────────
+    - name: postgres.replication
+      interval: 30s
+      rules:
+        - alert: PostgresReplicationLagHigh
+          expr: pg_replication_lag_seconds > 30
+          for: 2m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PostgreSQL replication lag > 30 s"
+            description: "Replica {{ $labels.instance }} is {{ $value }}s behind primary. Risk of stale reads."
+            runbook: "docs/runbooks/postgres-replication-lag.md"
+
+        - alert: PostgresReplicationLagCritical
+          expr: pg_replication_lag_seconds > 120
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "PostgreSQL replication lag > 2 min — RPO risk"
+            description: "Replica {{ $labels.instance }} is {{ $value }}s behind primary. Failover may lose data."
+            runbook: "docs/runbooks/postgres-replication-lag.md"
+
+    # ── Long-running transactions ──────────────────────────────────────────────
+    - name: postgres.transactions
+      interval: 30s
+      rules:
+        - alert: PostgresLongRunningTransaction
+          expr: |
+            pg_stat_activity_max_tx_duration_seconds{datname="governance"} > 30
+          for: 1m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Long-running transaction > 30 s on governance DB"
+            description: "Transaction running for {{ $value }}s on {{ $labels.instance }}. May block DDL or vacuum."
+            runbook: "docs/runbooks/postgres-long-tx.md"
+
+        - alert: PostgresLongRunningTransactionCritical
+          expr: |
+            pg_stat_activity_max_tx_duration_seconds{datname="governance"} > 300
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Long-running transaction > 5 min — DDL / vacuum blocked"
+            runbook: "docs/runbooks/postgres-long-tx.md"
+
+    # ── Vacuum / freeze countdown ──────────────────────────────────────────────
+    - name: postgres.vacuum
+      interval: 60s
+      rules:
+        - alert: PostgresVacuumFreezeRisk
+          expr: |
+            pg_stat_user_tables_n_dead_tup{relname=~"access_audit.*"} > 1000000
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "High dead tuple count on access_audit partition"
+            description: "{{ $labels.relname }} has {{ $value }} dead tuples. Autovacuum may be lagging."
+            runbook: "docs/runbooks/postgres-vacuum.md"
+
+        - alert: PostgresTransactionIDWrapAround
+          expr: |
+            pg_database_wraparound_age_mxid{datname="governance"} > 1500000000
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Transaction ID wraparound approaching on governance DB"
+            description: "Age = {{ $value }}. Force-vacuum required immediately."
+            runbook: "docs/runbooks/postgres-txid-wraparound.md"
+
+    # ── Deadlocks ─────────────────────────────────────────────────────────────
+    - name: postgres.locks
+      interval: 30s
+      rules:
+        - alert: PostgresDeadlockRate
+          expr: |
+            rate(pg_stat_database_deadlocks{datname="governance"}[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PostgreSQL deadlock rate > 0.1/s on governance DB"
+            description: "{{ $value }} deadlocks/s over 5-min window. Check policy_audit concurrent appenders."
+            runbook: "docs/runbooks/postgres-deadlocks.md"
+
+    # ── Connection pool ────────────────────────────────────────────────────────
+    - name: postgres.connections
+      interval: 30s
+      rules:
+        - alert: PostgresConnectionPoolNearCapacity
+          expr: |
+            pg_stat_database_numbackends{datname="governance"}
+              / pg_settings_max_connections * 100 > 80
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PostgreSQL connection pool at {{ $value }}% capacity"
+            runbook: "docs/runbooks/postgres-connections.md"
+
+    # ── Hash-chain verifier ────────────────────────────────────────────────────
+    - name: postgres.audit_chain
+      interval: 60s
+      rules:
+        - alert: PolicyAuditChainVerificationFailed
+          expr: governance_policy_audit_chain_divergent_count > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "policy_audit hash-chain divergence detected"
+            description: "{{ $value }} tenants have a broken audit chain. Possible tampering or DB-level corruption."
+            runbook: "docs/runbooks/policy-audit-chain-breach.md"
+
+        - alert: PolicyAuditChainVerifierNotRunning
+          expr: |
+            time() - governance_policy_audit_chain_last_verified_timestamp > 7200
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "policy_audit chain verifier has not run in > 2 hours"
+            runbook: "docs/runbooks/policy-audit-chain-breach.md"
+
+    # ── RLS bypass alarm ──────────────────────────────────────────────────────
+    - name: postgres.rls
+      interval: 60s
+      rules:
+        - alert: BypassRLSRoleGrantedToNonSystemRole
+          # This metric is emitted by a nightly audit job that checks pg_roles
+          expr: governance_bypassrls_non_system_role_count > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "BYPASSRLS granted to unexpected role"
+            description: "{{ $value }} non-system roles have BYPASSRLS. Investigate immediately."
+            runbook: "docs/runbooks/rls-bypass-breach.md"
+
+    # ── Partition pre-creation ─────────────────────────────────────────────────
+    - name: postgres.partitions
+      interval: 3600s
+      rules:
+        - alert: AccessAuditPartitionMissing
+          # Fired by the partition-cron job when it cannot create the next day's partition
+          expr: governance_access_audit_partition_days_ahead < 1
+          for: 30m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "access_audit has no partition for tomorrow"
+            description: "INSERTs will fail at midnight if partition is not created."
+            runbook: "docs/runbooks/partition-maintenance.md"

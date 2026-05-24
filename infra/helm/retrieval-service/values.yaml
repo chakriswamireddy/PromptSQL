@@ -1,0 +1,63 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/governance-platform/retrieval-service
+  pullPolicy: IfNotPresent
+  tag: ""  # overridden by ArgoCD / CI with image digest
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/retrieval-service-irsa
+  name: "retrieval-service"
+
+service:
+  port: 8083
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+  limits:
+    cpu: "2"
+    memory: "1Gi"
+
+env:
+  HTTP_ADDR: ":8083"
+  DEPLOYMENT_ENVIRONMENT: "production"
+  OTEL_SAMPLING_RATE: "1.0"
+  PDP_ADDR: "pdp:9090"
+  EMBEDDING_MODEL: "text-embedding-3-small"
+  EMBEDDING_DIMS: "1536"
+  SNAPSHOT_TTL_SEC: "300"
+  DOC_RESULT_TTL_SEC: "60"
+  EMBED_TTL_SEC: "3600"
+  MAX_CHUNK_BYTES: "4096"
+  QUARANTINE_SWEEP_INTERVAL: "1h"
+
+secretRef:
+  name: retrieval-service-secrets
+  # Keys expected in the Secret:
+  #   DATABASE_URL
+  #   REDIS_URL
+  #   OPENAI_API_KEY
+  #   KAFKA_BROKERS
+  #   AUDIT_HMAC_KEY
+  #   UNLEASH_API_TOKEN
+  #   OTEL_EXPORTER_OTLP_ENDPOINT
+
+otel:
+  enabled: true
+  endpoint: "http://otel-collector.observability:4317"

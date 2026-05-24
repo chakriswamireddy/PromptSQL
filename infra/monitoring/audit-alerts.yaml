@@ -1,0 +1,153 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: audit-pipeline-alerts
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+
+    # ── Producer health ────────────────────────────────────────────────────────
+    - name: audit.producer
+      interval: 60s
+      rules:
+        - alert: AuditEventsDropped
+          expr: increase(audit_dropped_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: data-platform
+          annotations:
+            summary: "Audit events dropped ({{ $labels.topic }})"
+            description: >
+              {{ $value }} audit events were dropped in the last 5 minutes on topic
+              {{ $labels.topic }}. The disk buffer ceiling was reached. Investigate
+              Kafka connectivity and buffer configuration immediately.
+
+        - alert: AuditProducerErrorRateHigh
+          expr: |
+            rate(audit_produce_errors_total[5m]) /
+            (rate(audit_produced_total[5m]) + rate(audit_produce_errors_total[5m]) + 0.001) > 0.01
+          for: 2m
+          labels:
+            severity: warning
+            team: data-platform
+          annotations:
+            summary: "Audit producer error rate > 1% ({{ $labels.topic }})"
+            description: >
+              More than 1% of audit produce attempts are failing on topic
+              {{ $labels.topic }}. Check Kafka cluster health.
+
+        - alert: AuditDiskBufferActive
+          expr: increase(audit_buffered_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            team: data-platform
+          annotations:
+            summary: "Audit producer spooling to disk ({{ $labels.topic }})"
+            description: >
+              The audit producer has been unable to deliver events to Kafka for
+              over 5 minutes and is spooling to disk on topic {{ $labels.topic }}.
+
+    # ── ClickHouse sink ────────────────────────────────────────────────────────
+    - name: audit.clickhouse-sink
+      interval: 60s
+      rules:
+        - alert: AuditClickHouseLagHigh
+          expr: audit_clickhouse_consumer_lag_seconds > 60
+          for: 2m
+          labels:
+            severity: warning
+            team: data-platform
+          annotations:
+            summary: "Audit ClickHouse consumer lag > 60s ({{ $labels.topic }})"
+            description: >
+              The ClickHouse sink consumer is {{ $value }}s behind on topic
+              {{ $labels.topic }}. SLO is < 5s p95.
+
+        - alert: AuditClickHouseLagCritical
+          expr: audit_clickhouse_consumer_lag_seconds > 300
+          for: 5m
+          labels:
+            severity: critical
+            team: data-platform
+          annotations:
+            summary: "Audit ClickHouse consumer lag > 5m ({{ $labels.topic }})"
+            description: >
+              Critical: audit event lag is {{ $value }}s on topic {{ $labels.topic }}.
+              Admin UI is serving stale data. Investigate sink pod and ClickHouse health.
+
+        - alert: AuditClickHouseInsertErrors
+          expr: increase(audit_clickhouse_insert_errors_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: data-platform
+          annotations:
+            summary: "ClickHouse insert errors on {{ $labels.table }}"
+            description: >
+              {{ $value }} insert errors on table {{ $labels.table }} in the last 5m.
+
+    # ── WORM sink ─────────────────────────────────────────────────────────────
+    - name: audit.worm-sink
+      interval: 300s
+      rules:
+        - alert: AuditWORMWriteFailed
+          expr: increase(audit_worm_write_errors_total[1h]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: data-platform
+          annotations:
+            summary: "WORM object write failed ({{ $labels.topic }})"
+            description: >
+              Failed to write a WORM audit object to S3 for topic {{ $labels.topic }}.
+              Compliance evidence may be incomplete. Check S3/MinIO connectivity and
+              Object Lock configuration immediately.
+
+        - alert: AuditWORMNoObjectsWritten
+          expr: |
+            increase(audit_worm_objects_written_total[2h]) == 0
+            and on() (increase(audit_worm_consumed_total[2h]) > 100)
+          for: 0m
+          labels:
+            severity: warning
+            team: data-platform
+          annotations:
+            summary: "WORM sink consuming but not writing objects"
+            description: >
+              The WORM sink has consumed events but written no objects in the last 2h.
+              This may indicate a batching or flush issue.
+
+    # ── Chain verifier ────────────────────────────────────────────────────────
+    - name: audit.chain-verifier
+      interval: 300s
+      rules:
+        - alert: AuditChainMismatch
+          expr: increase(audit_chain_mismatch_total[1h]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "Audit hash-chain mismatch detected (tenant={{ $labels.tenant_id }})"
+            description: >
+              CRITICAL SECURITY ALERT: The hourly hash-chain verifier detected a
+              mismatch between PostgreSQL policy_audit and WORM storage for tenant
+              {{ $labels.tenant_id }}. This may indicate tampering. Follow the
+              chain-mismatch forensic runbook immediately.
+
+        - alert: AuditVerifierNotRunning
+          expr: |
+            time() - max(audit_chain_verifier_runs_total) by () > 7200
+          for: 5m
+          labels:
+            severity: warning
+            team: data-platform
+          annotations:
+            summary: "Audit chain verifier has not run in > 2h"
+            description: >
+              No verifier run has been recorded in the last 2 hours. The verifier
+              may be down or stuck. Check the audit-chain-verifier deployment.

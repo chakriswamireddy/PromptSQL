@@ -1,0 +1,65 @@
+groups:
+  - name: platform.phase0
+    interval: 60s
+    rules:
+
+      # Any critical service down for > 2 min
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Prometheus target {{ $labels.instance }} has been unreachable for 2 minutes."
+          runbook: "https://docs.internal/runbooks/service-down"
+
+      # Container restart loop
+      - alert: ContainerRestartLoop
+        expr: increase(kube_pod_container_status_restarts_total[10m]) > 3
+        for: 0m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Container {{ $labels.container }} restarting"
+          description: "Container {{ $labels.container }} in pod {{ $labels.pod }} has restarted > 3 times in 10 minutes."
+
+      # CI failure rate on main > 5% over 24h
+      - alert: CIFailureRateHigh
+        expr: |
+          sum(rate(github_workflow_run_total{conclusion="failure", branch="main"}[24h]))
+          / sum(rate(github_workflow_run_total{branch="main"}[24h])) > 0.05
+        for: 0m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "CI failure rate on main exceeds 5%"
+          description: "More than 5% of CI runs on main have failed in the last 24 hours."
+
+      # High request latency p99 > SLO threshold
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (job, le) (rate(request_duration_seconds_bucket[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "p99 latency > 500ms for {{ $labels.job }}"
+          description: "The 99th percentile request latency for {{ $labels.job }} has exceeded the 500ms SLO for 5 minutes."
+
+      # OTel collector drops
+      - alert: OTelDroppedSpans
+        expr: increase(otelcol_processor_dropped_spans_total[5m]) > 100
+        for: 0m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "OTel collector dropping spans"
+          description: "The OTel collector has dropped more than 100 spans in the last 5 minutes. Check collector health."

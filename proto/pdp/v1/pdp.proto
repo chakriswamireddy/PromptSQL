@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package pdp.v1;
+
+option go_package = "github.com/governance-platform/pkg/pdpv1";
+
+// PDP is the Policy Decision Point service.
+// Every gateway, proxy, and AI orchestrator calls Decide for authorization.
+service PDP {
+  rpc Decide      (DecideRequest)     returns (Decision);
+  rpc BulkDecide  (BulkDecideRequest) returns (BulkDecideResponse);
+  rpc Explain     (DecideRequest)     returns (DecisionExplanation);
+  rpc Validate    (ValidateRequest)   returns (ValidateResponse);
+}
+
+// DecideRequest carries the serialised + HMAC-signed SessionContext, the
+// requested action, and the resource URI to evaluate.
+message DecideRequest {
+  // JSON(SessionContext) — base64-encoded.
+  bytes  subject_session_context = 1;
+  // HMAC-SHA256 signature over subject_session_context.
+  bytes  subject_session_sig     = 2;
+  // HMAC key ID for multi-key rotation.
+  string subject_session_key_id  = 3;
+
+  string action           = 4;
+  // Resource URI: <kind>://<datasource>/<schema>/<table>[/<column>]
+  string resource         = 5;
+  string data_source_id   = 6;
+  // Caller-supplied context attributes (e.g. row-level attrs known at call time).
+  map<string, string> context = 7;
+  string idempotency_key  = 8;
+}
+
+enum Effect {
+  EFFECT_UNSPECIFIED = 0;
+  EFFECT_PERMIT      = 1;
+  EFFECT_DENY        = 2;
+}
+
+// RowFilter carries the dialect-neutral predicate AST as compact JSON.
+// The Phase 6 Calcite sidecar translates this to SQL.
+message RowFilter {
+  bytes ast_json = 1;
+}
+
+message Obligation {
+  string type = 1;
+  map<string, string> params = 2;
+}
+
+message Decision {
+  Effect              effect             = 1;
+  repeated string     allowed_columns    = 2;
+  repeated string     denied_columns     = 3;
+  map<string, string> column_masks       = 4;
+  RowFilter           row_filter         = 5;
+  repeated Obligation obligations        = 6;
+  string              reason             = 7;
+  string              policy_set_version = 8;
+  int32               ttl_seconds        = 9;
+  repeated string     matched_policy_ids = 10;
+}
+
+message BulkDecideRequest {
+  repeated DecideRequest requests = 1;
+}
+
+message BulkDecideItem {
+  DecideRequest request  = 1;
+  Decision      decision = 2;
+  string        error    = 3;
+}
+
+message BulkDecideResponse {
+  repeated BulkDecideItem items = 1;
+}
+
+message DecisionExplanation {
+  Decision        decision         = 1;
+  repeated string matched_rule_ids = 2;
+  string          human_readable   = 3;
+  repeated string evaluation_trace = 4;
+}
+
+message ValidateRequest {
+  string tenant_id  = 1;
+  // JSON-encoded Conditions DSL node.
+  bytes  conditions = 2;
+}
+
+message ValidateResponse {
+  bool            valid  = 1;
+  repeated string errors = 2;
+}

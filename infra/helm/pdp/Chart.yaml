@@ -1,0 +1,6 @@
+apiVersion: v2
+name: pdp
+description: Policy Decision Point — centralized authorization engine (gRPC)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

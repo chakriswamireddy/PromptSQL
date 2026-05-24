@@ -1,0 +1,17 @@
+{
+  "name": "@platform/feature-flags",
+  "version": "0.1.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "unleash-client": "^6.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,212 @@
+name: proxy
+
+on:
+  push:
+    paths:
+      - 'apps/proxy/**'
+      - 'apps/proxy-calcite-sidecar/**'
+      - 'apps/proxy-rls-syncer/**'
+      - 'pkg/calcitepb/**'
+      - 'migrations/0017_*'
+      - '.github/workflows/proxy.yml'
+  pull_request:
+    paths:
+      - 'apps/proxy/**'
+      - 'apps/proxy-calcite-sidecar/**'
+      - 'apps/proxy-rls-syncer/**'
+      - 'pkg/calcitepb/**'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ── Go proxy unit tests ─────────────────────────────────────────────────────
+  test-proxy-go:
+    name: proxy-go-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Run proxy unit tests
+        working-directory: apps/proxy
+        run: go test ./... -count=1 -race -timeout 60s
+
+      - name: Run pkg/calcitepb tests
+        working-directory: pkg/calcitepb
+        run: go test ./... -count=1 -timeout 30s
+
+      - name: Run proxy-rls-syncer tests
+        working-directory: apps/proxy-rls-syncer
+        run: go test ./... -count=1 -timeout 60s
+
+  # ── Denylist / hardening tests (must pass before any merge) ────────────────
+  test-denylist:
+    name: proxy-denylist-hardening
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      - name: Run denylist tests
+        working-directory: apps/proxy
+        run: go test -run TestDenylist -v -count=1
+
+  # ── Calcite sidecar Java build ──────────────────────────────────────────────
+  build-calcite-sidecar:
+    name: calcite-sidecar-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build Calcite sidecar
+        working-directory: apps/proxy-calcite-sidecar
+        run: mvn package -DskipTests -q
+
+      - name: Run Calcite sidecar tests
+        working-directory: apps/proxy-calcite-sidecar
+        run: mvn test -q
+
+  # ── Integration tests (proxy + PDP + PostgreSQL) ────────────────────────────
+  integration-test:
+    name: proxy-integration
+    runs-on: ubuntu-latest
+    needs: [test-proxy-go, build-calcite-sidecar]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app_write
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: governance_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgres://app_write:changeme@localhost:5432/governance_test?sslmode=disable
+        run: |
+          go run ./scripts/migrate up
+
+      - name: Run proxy integration tests
+        env:
+          DATABASE_URL: postgres://app_write:changeme@localhost:5432/governance_test?sslmode=disable
+          REDIS_URL: redis://localhost:6379/0
+          PDP_GRPC_ADDR: "localhost:9090"
+          CALCITE_GRPC_ADDR: "localhost:9095"
+        working-directory: apps/proxy
+        run: go test -run Integration -v -count=1 -timeout 120s
+
+  # ── Build Docker images ─────────────────────────────────────────────────────
+  docker-proxy:
+    name: docker-build-proxy
+    runs-on: ubuntu-latest
+    needs: [integration-test]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/proxy/Dockerfile
+          push: true
+          tags: ghcr.io/governance-platform/proxy:${{ github.sha }}
+
+  docker-calcite-sidecar:
+    name: docker-build-calcite-sidecar
+    runs-on: ubuntu-latest
+    needs: [integration-test]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: apps/proxy-calcite-sidecar
+          push: true
+          tags: ghcr.io/governance-platform/proxy-calcite-sidecar:${{ github.sha }}
+
+  docker-rls-syncer:
+    name: docker-build-rls-syncer
+    runs-on: ubuntu-latest
+    needs: [integration-test]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/proxy-rls-syncer/Dockerfile
+          push: true
+          tags: ghcr.io/governance-platform/proxy-rls-syncer:${{ github.sha }}
+
+  # ── Helm chart lint ─────────────────────────────────────────────────────────
+  helm-lint:
+    name: helm-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Lint proxy chart
+        run: helm lint infra/helm/proxy
+
+      - name: Lint proxy-rls-syncer chart
+        run: helm lint infra/helm/proxy-rls-syncer

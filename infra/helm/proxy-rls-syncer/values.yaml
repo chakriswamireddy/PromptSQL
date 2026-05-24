@@ -1,0 +1,39 @@
+replicaCount: 1  # Singleton — only one syncer runs at a time to avoid conflicts.
+
+image:
+  repository: ghcr.io/governance-platform/proxy-rls-syncer
+  pullPolicy: IfNotPresent
+  tag: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "proxy-rls-syncer"
+
+service:
+  metricsPort: 9097
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+env:
+  DEPLOYMENT_ENVIRONMENT: "production"
+  OTEL_SAMPLING_RATE: "1.0"
+  SYNC_INTERVAL: "1h"
+  METRICS_ADDR: ":9097"
+
+secretRef:
+  name: proxy-rls-syncer-secrets
+  # Keys expected:
+  #   DATABASE_URL
+  #   UNLEASH_API_TOKEN
+  #   OTEL_EXPORTER_OTLP_ENDPOINT
+
+otel:
+  enabled: true
+  endpoint: "http://otel-collector.observability:4317"

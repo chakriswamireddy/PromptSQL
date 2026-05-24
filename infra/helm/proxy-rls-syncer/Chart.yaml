@@ -1,0 +1,6 @@
+apiVersion: v2
+name: proxy-rls-syncer
+description: Hourly RLS policy syncer — mirrors proxy rules as native PG RLS (Phase 6)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,125 @@
+# Unleash feature flag registry — single source of truth.
+# Apply via: unleash-import --file infra/unleash/flags.yaml
+# Every new capability MUST be added here before the code lands in main.
+
+version: 1
+features:
+
+  # Phase 0 — Foundation (infrastructure only; no gating logic needed)
+  - name: api-gateway
+    description: API Gateway service is active
+    enabled: true
+    strategies:
+      - name: default
+
+  # Phase 1 — Control Plane Database
+  - name: control-plane-db
+    description: Phase 1 database schema and RLS active
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 2 — Authentication & Session
+  - name: authn-session
+    description: Ed25519 JWT auth and SessionContext enforcement
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 3 — PDP V1
+  - name: pdp-v1
+    description: Policy Decision Point V1 (Conditions DSL, gRPC)
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 4 — Admin Console & Simulator
+  - name: admin-console
+    description: Next.js admin console and policy simulator
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 5 — Audit Pipeline
+  - name: audit-pipeline
+    description: Kafka → ClickHouse → WORM S3 audit pipeline
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 6 — PEP PostgreSQL Proxy
+  - name: pep-postgres-proxy
+    description: Go wire proxy + Calcite sidecar SQL rewrite
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 7 — Schema Catalog & Crawler
+  - name: schema-catalog
+    description: information_schema crawler, embeddings, classification
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 8 — Permission-Aware Retrieval
+  - name: permission-aware-retrieval
+    description: AllowedSnapshot RAG, prompt injection defenses, LiteLLM routing
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 9 — AI PAP Graph
+  - name: ai-pap-graph
+    description: LangGraph PAP, constrained decoding, human approval
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 10 — AI PEP Graph
+  - name: ai-pep-graph
+    description: LangGraph PEP, AST-first SQL, chat UX
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 11 — Multi-Database Support
+  - name: multi-database
+    description: MySQL, SQL Server, Oracle, Snowflake, BigQuery, Databricks
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 12 — Real-Time Event Stream
+  - name: realtime-stream
+    description: WebSocket live feed, webhooks, DLQ, saved-query scheduler
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 13 — Anomaly Detection & Risk ABAC
+  - name: anomaly-detection
+    description: Flink baseline, riskScore ABAC variable
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 14 — Auto-Response & Break-Glass
+  - name: auto-response
+    description: Playbooks, step-up MFA, mid-flight masking, break-glass
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 15 — Scale-Out
+  - name: scale-multiregion
+    description: EKS, Linkerd, HA, active-active reads, DR drill
+    enabled: false
+    strategies:
+      - name: default
+
+  # Phase 16 — Compliance & GA
+  - name: compliance-ga
+    description: SOC 2 Type II evidence, pentest, SDKs, pricing, GA launch
+    enabled: false
+    strategies:
+      - name: default

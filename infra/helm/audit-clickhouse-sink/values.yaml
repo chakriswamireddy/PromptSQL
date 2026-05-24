@@ -1,0 +1,80 @@
+replicaCount: 2
+
+image:
+  repository: governance-platform/audit-clickhouse-sink
+  pullPolicy: IfNotPresent
+  tag: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # IRSA: allow the pod to assume the audit-sink IAM role
+    eks.amazonaws.com/role-arn: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9102"
+  prometheus.io/path: "/metrics"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  # Scale on Kafka consumer lag metric
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  # Allow egress to Kafka, ClickHouse, OTLP collector, Unleash
+  egressPorts:
+    - 9092   # Kafka
+    - 9000   # ClickHouse native
+    - 4317   # OTLP gRPC
+    - 4242   # Unleash
+
+env:
+  ENVIRONMENT: production
+  KAFKA_TOPIC_POLICY: audit.policy.prod
+  KAFKA_TOPIC_ACCESS: audit.access.prod
+  KAFKA_TOPIC_SYSTEM: audit.system.prod
+  KAFKA_CONSUMER_GROUP: audit-clickhouse-sink
+  METRICS_ADDR: ":9102"
+  BATCH_SIZE: "1000"
+  BATCH_TIMEOUT: "1s"
+
+envFromSecrets:
+  - name: KAFKA_BROKERS
+    secretName: audit-kafka-credentials
+    key: brokers
+  - name: CLICKHOUSE_DSN
+    secretName: audit-clickhouse-credentials
+    key: dsn
+  - name: UNLEASH_API_TOKEN
+    secretName: unleash-token
+    key: token
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 9102
+  initialDelaySeconds: 10
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 9102
+  initialDelaySeconds: 5
+  periodSeconds: 10

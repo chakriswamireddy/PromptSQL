@@ -1,0 +1,56 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pdp.fullname" . }}
+  labels:
+    {{- include "pdp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pdp.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow gRPC from authorised callers only.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              governance-platform/component: api-gateway
+        - namespaceSelector:
+            matchLabels:
+              governance-platform/component: proxy
+        - namespaceSelector:
+            matchLabels:
+              governance-platform/component: ai-orchestrator
+        - namespaceSelector:
+            matchLabels:
+              governance-platform/component: admin-console
+      ports:
+        - port: {{ .Values.service.grpcPort }}
+          protocol: TCP
+    # Allow Prometheus scrape from monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: {{ .Values.service.metricsPort }}
+          protocol: TCP
+  egress:
+    # Allow outbound to PostgreSQL, Redis, OTLP collector, Unleash.
+    - ports:
+        - port: 5432   # PostgreSQL
+          protocol: TCP
+        - port: 6379   # Redis
+          protocol: TCP
+        - port: 4317   # OTLP gRPC
+          protocol: TCP
+        - port: 4242   # Unleash
+          protocol: TCP
+        - port: 443    # External HTTPS (e.g. Vault)
+          protocol: TCP
+        - port: 53     # DNS
+          protocol: UDP
+{{- end }}

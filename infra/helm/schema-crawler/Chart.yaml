@@ -1,0 +1,6 @@
+apiVersion: v2
+name: schema-crawler
+description: Schema Catalog Crawler — continuously introspects and classifies database schemas
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

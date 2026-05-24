@@ -1,0 +1,43 @@
+run:
+  timeout: 5m
+  go: "1.22"
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - godot
+    - misspell
+    - revive
+    - depguard
+    - forbidigo
+    - noctx
+    - sqlclosecheck
+    - bodyclose
+
+linters-settings:
+  depguard:
+    rules:
+      no-raw-sql:
+        deny:
+          - pkg: "database/sql"
+            desc: "Use internal/db wrapper; never raw database/sql in service code"
+  forbidigo:
+    forbid:
+      - pattern: "fmt\\.Print.*"
+        msg: "Use structured logger (zerolog/zap), not fmt.Print"
+      - pattern: "os\\.Getenv"
+        msg: "Use config struct loaded at startup, not os.Getenv in hot paths"
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - errcheck
+        - forbidigo

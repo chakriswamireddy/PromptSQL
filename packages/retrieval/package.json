@@ -1,0 +1,21 @@
+{
+  "name": "@governance-platform/retrieval",
+  "version": "0.1.0",
+  "description": "Permission-aware retrieval SDK — AllowedSnapshot + Doc RAG + LLM routing",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,68 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/governance-platform/schema-crawler
+  pullPolicy: IfNotPresent
+  tag: ""  # overridden by ArgoCD / CI with image digest
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # AWS IRSA annotation — override per environment.
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/schema-crawler-irsa
+  name: "schema-crawler"
+
+service:
+  port: 8082
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "1"
+    memory: "512Mi"
+
+autoscaling:
+  enabled: false  # Crawler is a background job; fixed replica count is sufficient.
+
+podDisruptionBudget:
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  # Outbound to control-plane DB, Kafka, Vault, and target databases.
+  allowedNamespaceLabels:
+    - governance-platform/api-gateway
+    - governance-platform/admin-console
+
+env:
+  HTTP_ADDR: ":8082"
+  DEPLOYMENT_ENVIRONMENT: "production"
+  OTEL_SAMPLING_RATE: "1.0"
+  CRAWL_INTERVAL: "6h"
+  CRAWL_CONCURRENCY: "4"
+  SAMPLE_MAX_ROWS: "10"
+  EMBEDDING_MODEL: "text-embedding-3-small"
+  EMBEDDING_DIMS: "1536"
+  EMBEDDING_BATCH_SIZE: "100"
+  EMBEDDING_WORKERS: "4"
+  EMBEDDING_BUDGET_USD: "10.0"
+
+# Secrets read from Kubernetes Secret (populated by external-secrets-operator from Vault).
+secretRef:
+  name: schema-crawler-secrets
+  # Keys expected in the Secret:
+  #   DATABASE_URL
+  #   OPENAI_API_KEY
+  #   KAFKA_BROKERS
+  #   AUDIT_HMAC_KEY
+  #   UNLEASH_API_TOKEN
+  #   OTEL_EXPORTER_OTLP_ENDPOINT
+
+otel:
+  enabled: true
+  endpoint: "http://otel-collector.observability:4317"

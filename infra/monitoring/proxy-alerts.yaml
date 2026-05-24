@@ -1,0 +1,140 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: proxy-alerts
+  namespace: monitoring
+  labels:
+    app: proxy
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── SLO alerts ─────────────────────────────────────────────────────────────
+    - name: proxy.slos
+      interval: 30s
+      rules:
+
+        # P99 end-to-end proxy overhead > 15 ms (client SLO breach).
+        - alert: ProxyHighQueryLatencyP99
+          expr: |
+            histogram_quantile(0.99,
+              rate(proxy_query_duration_seconds_bucket{decision="allow"}[5m])
+            ) > 0.015
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Proxy p99 query latency {{ $value | humanizeDuration }} > 15 ms"
+            description: "Proxy overhead p99 exceeds the 15 ms SLO. Check PDP and Calcite sidecar latency metrics."
+
+        # High query deny rate — possible policy misconfiguration.
+        - alert: ProxyHighDenyRate
+          expr: |
+            rate(proxy_queries_total{decision="deny"}[5m])
+            /
+            rate(proxy_queries_total[5m])
+            > 0.50
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Proxy deny rate {{ $value | humanizePercentage }} > 50%"
+            description: "More than half of proxy queries are being denied. Check PDP policy set and feature flag status."
+
+        # Calcite sidecar error rate > 0.1 %.
+        - alert: ProxyCalciteSidecarErrorRate
+          expr: |
+            rate(proxy_calcite_sidecar_errors_total[5m])
+            /
+            rate(proxy_queries_total[5m])
+            > 0.001
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Proxy Calcite sidecar error rate {{ $value | humanizePercentage }} > 0.1%"
+            description: "Calcite sidecar rewrite errors are above threshold. New queries may be denied. Check sidecar logs."
+
+        # Rewrite latency p99 > 5 ms (warm Calcite SLO breach).
+        - alert: ProxyRewriteHighLatency
+          expr: |
+            histogram_quantile(0.99,
+              rate(proxy_rewrite_duration_seconds_bucket[5m])
+            ) > 0.005
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Proxy Calcite rewrite p99 {{ $value | humanizeDuration }} > 5 ms"
+            description: "SQL rewrite latency is above 5 ms. JVM may need restarting or cache warmed."
+
+        # Token validation failure rate spike.
+        - alert: ProxyTokenValidationFailureRate
+          expr: |
+            rate(proxy_token_validations_total{result!="ok"}[5m])
+            /
+            rate(proxy_token_validations_total[5m])
+            > 0.10
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Proxy token validation failure rate {{ $value | humanizePercentage }} > 10%"
+            description: "Many connection tokens are failing validation. Check Redis health and token issuance in api-gateway."
+
+        # RLS syncer failure — native RLS may drift from proxy policies.
+        - alert: ProxyRLSSyncerFailed
+          expr: increase(proxy_rls_sync_errors_total[1h]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "RLS syncer encountered {{ $value }} error(s) in the past hour"
+            description: "Native RLS policies may have drifted from proxy enforcement rules. Investigate proxy-rls-syncer logs."
+
+        # Connection pool exhaustion — clients will see pool acquisition failures.
+        - alert: ProxyPoolAcquireLatencyHigh
+          expr: |
+            histogram_quantile(0.99,
+              rate(proxy_pool_acquire_wait_seconds_bucket[5m])
+            ) > 0.200
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Proxy backend pool acquire p99 {{ $value | humanizeDuration }} > 200 ms"
+            description: "Backend connection pool is congested. Check per-tenant pool size limits and backend DB health."
+
+        # Cost gate trips spike — queries exceeding plan limits.
+        - alert: ProxyCostGateSpiking
+          expr: rate(proxy_cost_gate_trips_total[5m]) > 5
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Proxy cost gate trips {{ $value }}/s over 5 minutes"
+            description: "Many queries are being rejected by the cost gate. A tenant may be running expensive queries. Review role cost caps."
+
+    # ── Recording rules ────────────────────────────────────────────────────────
+    - name: proxy.recording
+      interval: 60s
+      rules:
+        - record: proxy:query_allow_rate:rate5m
+          expr: sum(rate(proxy_queries_total{decision="allow"}[5m])) by (tenant_id)
+
+        - record: proxy:query_deny_rate:rate5m
+          expr: sum(rate(proxy_queries_total{decision="deny"}[5m])) by (tenant_id)
+
+        - record: proxy:p99_overhead:rate5m
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(proxy_query_duration_seconds_bucket[5m])) by (le)
+            )

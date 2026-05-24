@@ -1,0 +1,202 @@
+name: migrations
+
+on:
+  pull_request:
+    paths:
+      - "migrations/**"
+      - "pkg/migrate/**"
+      - "scripts/migrate/**"
+  push:
+    branches: [main]
+    paths:
+      - "migrations/**"
+
+concurrency:
+  group: migrations-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Guard 1: no merged migration file may be edited ─────────────────────────
+  migrations-frozen:
+    name: migrations-frozen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for edited migration files
+        run: |
+          # Compare every .up.sql file against its hash in migrations/hashes.manifest.
+          # Fails if a previously-committed file has changed.
+          if [ ! -f migrations/hashes.manifest ]; then
+            echo "hashes.manifest not found; generating baseline (first run)."
+            exit 0
+          fi
+
+          FAILED=0
+          while IFS='  ' read -r expected_hash filename; do
+            if [ -f "$filename" ]; then
+              actual_hash=$(sha256sum "$filename" | awk '{print $1}')
+              if [ "$actual_hash" != "$expected_hash" ]; then
+                echo "ERROR: $filename has been modified (manifest=$expected_hash, disk=$actual_hash)"
+                FAILED=1
+              fi
+            else
+              echo "ERROR: $filename is in manifest but missing from disk"
+              FAILED=1
+            fi
+          done < migrations/hashes.manifest
+
+          exit $FAILED
+
+  # ── Guard 2: every tenant-scoped table must have ENABLE + FORCE RLS ─────────
+  rls-enforced:
+    name: rls-enforced
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify RLS ENABLE and FORCE on tenant-scoped tables
+        run: |
+          TABLES=(users roles user_roles data_sources data_classifications
+                  policies policy_audit access_audit schema_metadata doc_chunks)
+          FAILED=0
+
+          for table in "${TABLES[@]}"; do
+            enable_count=$(grep -r "ALTER TABLE ${table} ENABLE\s*ROW LEVEL SECURITY" migrations/ | wc -l)
+            force_count=$(grep  -r "ALTER TABLE ${table} FORCE\s*ROW LEVEL SECURITY"  migrations/ | wc -l)
+
+            if [ "$enable_count" -lt 1 ]; then
+              echo "ERROR: $table missing ENABLE ROW LEVEL SECURITY"
+              FAILED=1
+            fi
+            if [ "$force_count" -lt 1 ]; then
+              echo "ERROR: $table missing FORCE ROW LEVEL SECURITY"
+              FAILED=1
+            fi
+          done
+
+          exit $FAILED
+
+  # ── Guard 3: naming conventions (snake_case, plural tables) ─────────────────
+  naming-conventions:
+    name: naming-conventions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check naming conventions in migration files
+        run: |
+          FAILED=0
+
+          # No camelCase column names (allow uppercase in constants/strings)
+          if grep -rn 'COLUMN [a-z][a-zA-Z]*[A-Z]' migrations/*.up.sql 2>/dev/null; then
+            echo "ERROR: camelCase column names found; use snake_case"
+            FAILED=1
+          fi
+
+          # Foreign key constraints must be named *_fk
+          if grep -rn 'FOREIGN KEY' migrations/*.up.sql | grep -v '_fk'; then
+            echo "ERROR: foreign key constraint missing _fk suffix"
+            FAILED=1
+          fi
+
+          exit $FAILED
+
+  # ── Apply + integration test ─────────────────────────────────────────────────
+  migration-integration:
+    name: migration-integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: governance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Create migration roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d governance \
+            -c "DO \$\$ BEGIN
+                  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_migration_login') THEN
+                    CREATE ROLE app_migration_login LOGIN PASSWORD 'changeme_migration';
+                  END IF;
+                  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_login_user') THEN
+                    CREATE ROLE app_login_user LOGIN PASSWORD 'changeme_app';
+                  END IF;
+                  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_readonly') THEN
+                    CREATE ROLE app_readonly;
+                  END IF;
+                END \$\$;
+               GRANT CONNECT ON DATABASE governance TO app_login_user, app_migration_login;"
+
+      - name: Run migrations up
+        env:
+          DATABASE_URL: postgres://app_migration_login:changeme_migration@127.0.0.1:5432/governance?sslmode=disable
+          MIGRATE_ALLOW_DOWN: "false"
+        run: |
+          cd scripts/migrate
+          go run main.go up
+
+      - name: Verify migration status
+        env:
+          DATABASE_URL: postgres://app_migration_login:changeme_migration@127.0.0.1:5432/governance?sslmode=disable
+        run: |
+          cd scripts/migrate
+          go run main.go status
+
+      - name: Run integration tests (RLS isolation + hash chain)
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/governance?sslmode=disable
+        run: |
+          go test -v -tags integration -run TestRLS ./pkg/migrate/...
+          go test -v -tags integration -run TestHashChain ./pkg/migrate/...
+
+      - name: Run migrations down then up (round-trip in dev mode)
+        env:
+          DATABASE_URL: postgres://app_migration_login:changeme_migration@127.0.0.1:5432/governance?sslmode=disable
+          MIGRATE_ALLOW_DOWN: "true"
+        run: |
+          cd scripts/migrate
+          go run main.go down
+          go run main.go up
+
+      - name: Seed idempotency check
+        env:
+          DATABASE_URL: postgres://app_migration_login:changeme_migration@127.0.0.1:5432/governance?sslmode=disable
+          POSTGRES_HOST: "127.0.0.1"
+          POSTGRES_USER: app_login_user
+          POSTGRES_PASSWORD: changeme_app
+          POSTGRES_DB: governance
+        run: |
+          # Run seed twice; row counts must be identical after both runs
+          pnpm --filter @platform/scripts run seed
+          COUNT1=$(psql postgres://app_login_user:changeme_app@127.0.0.1:5432/governance?sslmode=disable \
+            -t -c "SET app.tenant_id='018f4e1a-0001-7000-8000-000000000001'; SELECT COUNT(*) FROM users")
+          pnpm --filter @platform/scripts run seed
+          COUNT2=$(psql postgres://app_login_user:changeme_app@127.0.0.1:5432/governance?sslmode=disable \
+            -t -c "SET app.tenant_id='018f4e1a-0001-7000-8000-000000000001'; SELECT COUNT(*) FROM users")
+          if [ "$COUNT1" != "$COUNT2" ]; then
+            echo "ERROR: seed is not idempotent (before=$COUNT1 after=$COUNT2)"
+            exit 1
+          fi
+          echo "Seed idempotency OK: $COUNT1 users"

@@ -1,0 +1,52 @@
+name: Deploy — dev
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC for AWS assume-role
+
+jobs:
+  deploy-dev:
+    name: Build, push, deploy to dev
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push all service images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          for service in api-gateway pdp proxy schema-crawler; do
+            docker buildx build \
+              --push \
+              --tag "$ECR_REGISTRY/governance-platform/$service:$IMAGE_TAG" \
+              --cache-from "type=registry,ref=$ECR_REGISTRY/governance-platform/$service:cache" \
+              --cache-to "type=registry,ref=$ECR_REGISTRY/governance-platform/$service:cache,mode=max" \
+              apps/$service
+          done
+
+      - name: Terraform plan + apply (dev)
+        working-directory: infra/terraform/environments/dev
+        run: |
+          terraform init
+          terraform plan -out=tfplan -var="image_tag=${{ github.sha }}"
+          terraform apply -auto-approve tfplan
+
+      - name: Smoke test
+        run: bash scripts/verify-env.sh --env dev

@@ -1,0 +1,19 @@
+# Global: platform team reviews everything by default
+*                             @governance-platform/platform-team
+
+# Infra — only platform team merges
+infra/                        @governance-platform/platform-team
+infra/terraform/              @governance-platform/platform-team
+.github/workflows/            @governance-platform/platform-team
+
+# Services — service owners review their own code
+apps/api-gateway/             @governance-platform/backend-team
+apps/pdp/                     @governance-platform/backend-team
+apps/proxy/                   @governance-platform/backend-team
+apps/schema-crawler/          @governance-platform/backend-team
+apps/ai-orchestrator/         @governance-platform/ml-team
+apps/admin-console/           @governance-platform/frontend-team
+
+# Packages — dual ownership
+packages/                     @governance-platform/platform-team
+packages/audit-client/        @governance-platform/security-team @governance-platform/platform-team

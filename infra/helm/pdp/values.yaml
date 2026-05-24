@@ -1,0 +1,69 @@
+replicaCount: 3
+
+image:
+  repository: ghcr.io/governance-platform/pdp
+  pullPolicy: IfNotPresent
+  tag: ""  # overridden by ArgoCD / CI with the image digest
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # AWS IRSA annotation — override per environment.
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/pdp-irsa
+  name: "pdp"
+
+service:
+  grpcPort: 9092
+  metricsPort: 9093
+  httpPort: 8080
+
+resources:
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+  limits:
+    cpu: "2"
+    memory: "1Gi"  # per-pod cap for L1 cache
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+
+podDisruptionBudget:
+  minAvailable: 2
+
+networkPolicy:
+  enabled: true
+  # Only allow ingress from api-gateway, proxy, ai-orchestrator, admin-console namespaces.
+  allowedNamespaceLabels:
+    - governance-platform/api-gateway
+    - governance-platform/proxy
+    - governance-platform/ai-orchestrator
+    - governance-platform/admin-console
+
+env:
+  GRPC_ADDR: ":9092"
+  HTTP_ADDR: ":8080"
+  METRICS_ADDR: ":9093"
+  DEPLOYMENT_ENVIRONMENT: "production"
+  OTEL_SAMPLING_RATE: "1.0"
+
+# Secrets read from Kubernetes Secret (populated by external-secrets-operator from Vault).
+secretRef:
+  name: pdp-secrets
+  # Keys expected in the Secret:
+  #   DATABASE_URL
+  #   REDIS_URL
+  #   HMAC_SECRETS
+  #   UNLEASH_API_TOKEN
+  #   OTEL_EXPORTER_OTLP_ENDPOINT
+
+otel:
+  enabled: true
+  # Sidecar collector endpoint (injected by Linkerd / OTel operator).
+  endpoint: "http://otel-collector.observability:4317"

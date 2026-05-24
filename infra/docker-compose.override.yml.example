@@ -1,0 +1,19 @@
+# Copy this file to docker-compose.override.yml for per-engineer overrides.
+# This file is git-ignored; never commit your personal overrides.
+
+# Example: expose a GPU to the ai-orchestrator container for local LLM inference
+# services:
+#   ai-orchestrator:
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               count: 1
+#               capabilities: [gpu]
+
+# Example: use a different Postgres port to avoid collisions
+# services:
+#   postgres:
+#     ports:
+#       - "127.0.0.1:5433:5432"

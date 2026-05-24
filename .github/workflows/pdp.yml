@@ -1,0 +1,170 @@
+name: PDP — Policy Decision Point
+
+on:
+  push:
+    branches: [main, "feat/phase-3*"]
+    paths:
+      - "apps/pdp/**"
+      - "packages/policy-engine/**"
+      - "pkg/pdpv1/**"
+      - "migrations/0014_*"
+      - ".github/workflows/pdp.yml"
+  pull_request:
+    paths:
+      - "apps/pdp/**"
+      - "packages/policy-engine/**"
+      - "pkg/pdpv1/**"
+      - "migrations/0014_*"
+
+env:
+  GO_VERSION: "1.22"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/governance-platform/pdp
+
+jobs:
+  # ── 1. policy-engine unit + property + fuzz tests ─────────────────────────
+  policy-engine-tests:
+    name: policy-engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: packages/policy-engine/go.sum
+
+      - name: Unit + property tests
+        working-directory: packages/policy-engine
+        run: go test -v -race -count=1 ./...
+
+      - name: Fuzz (30 second budget per corpus)
+        working-directory: packages/policy-engine
+        run: |
+          go test -fuzz=FuzzParse   -fuzztime=30s ./dsl/
+          go test -fuzz=FuzzCompile -fuzztime=30s ./dsl/
+
+  # ── 2. PDP unit tests ─────────────────────────────────────────────────────
+  pdp-unit-tests:
+    name: pdp unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: apps/pdp/go.sum
+
+      - name: Test
+        working-directory: apps/pdp
+        run: go test -v -race -count=1 ./internal/...
+
+  # ── 3. PDP integration tests (requires PostgreSQL + Redis) ───────────────
+  pdp-integration-tests:
+    name: pdp integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app_login_user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: governance
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: apps/pdp/go.sum
+
+      - name: Run migrations
+        run: |
+          go run ./scripts/migrate up \
+            --db-url postgres://app_login_user:password@localhost:5432/governance?sslmode=disable
+
+      - name: Integration tests
+        working-directory: apps/pdp
+        env:
+          DATABASE_URL: postgres://app_login_user:password@localhost:5432/governance?sslmode=disable
+          REDIS_URL: redis://localhost:6379/0
+          DEPLOYMENT_ENVIRONMENT: test
+        run: go test -v -race -count=1 -tags=integration ./...
+
+  # ── 4. Benchmark regression check ─────────────────────────────────────────
+  pdp-bench:
+    name: pdp benchmark (regression check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: packages/policy-engine/go.sum
+
+      - name: Run benchmarks
+        working-directory: packages/policy-engine
+        run: go test -bench=. -benchmem -benchtime=3s ./engine/ | tee bench.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: packages/policy-engine/bench.txt
+
+  # ── 5. Build & push Docker image ──────────────────────────────────────────
+  docker-build:
+    name: docker build
+    runs-on: ubuntu-latest
+    needs: [policy-engine-tests, pdp-unit-tests]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/pdp/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 6. Proto breaking-change check ────────────────────────────────────────
+  proto-check:
+    name: proto breaking-change check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for proto breaking changes
+        run: |
+          echo "TODO: wire up buf breaking check against main branch"
+          echo "buf breaking --against '.git#branch=main' proto/pdp/v1/"

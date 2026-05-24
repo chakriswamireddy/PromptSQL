@@ -1,0 +1,226 @@
+name: retrieval-service
+
+on:
+  push:
+    paths:
+      - "apps/retrieval-service/**"
+      - "migrations/0019_*"
+      - "packages/retrieval/**"
+      - ".github/workflows/retrieval-service.yml"
+  pull_request:
+    paths:
+      - "apps/retrieval-service/**"
+      - "migrations/0019_*"
+      - "packages/retrieval/**"
+      - ".github/workflows/retrieval-service.yml"
+
+env:
+  GO_VERSION: "1.22"
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/governance-platform/retrieval-service
+
+jobs:
+  # ── Go unit tests (injection, router, snapshot, cache) ─────────────────────
+  test-unit:
+    name: Go unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/retrieval-service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: apps/retrieval-service/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: go test ./internal/injection/... ./internal/router/... ./internal/snapshot/... ./internal/cache/... -v -count=1 -race
+
+  # ── Go integration tests ───────────────────────────────────────────────────
+  test-integration:
+    name: Integration tests (Postgres + Redis)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/retrieval-service
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: app_migrator
+          POSTGRES_PASSWORD: app_migrator
+          POSTGRES_DB: governance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app_migrator"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: apps/retrieval-service/go.sum
+
+      - name: Install golang-migrate
+        run: |
+          curl -sSL https://github.com/golang-migrate/migrate/releases/download/v4.17.1/migrate.linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin migrate
+
+      - name: Apply all migrations
+        env:
+          DATABASE_URL: "postgres://app_migrator:app_migrator@localhost:5432/governance?sslmode=disable"
+        run: |
+          migrate -path ../../migrations -database "$DATABASE_URL" up
+
+      - name: Run integration tests
+        env:
+          TEST_DATABASE_URL: "postgres://app_migrator:app_migrator@localhost:5432/governance?sslmode=disable"
+          TEST_REDIS_URL: "redis://localhost:6379/0"
+        run: go test ./internal/store/... ./internal/retrieval/... -v -count=1 -timeout 120s
+
+  # ── Adversarial corpus test (injection defence gate) ───────────────────────
+  test-adversarial:
+    name: Adversarial corpus injection test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/retrieval-service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: apps/retrieval-service/go.sum
+
+      - name: Run adversarial injection tests
+        run: go test ./internal/injection/... -v -count=1 -run TestCrossTenant
+
+  # ── TypeScript SDK lint + build ────────────────────────────────────────────
+  test-sdk:
+    name: TypeScript SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/retrieval
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build SDK
+        run: pnpm build
+
+  # ── Migration guard ─────────────────────────────────────────────────────────
+  migration-guard:
+    name: Migration idempotency guard
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: app_migrator
+          POSTGRES_PASSWORD: app_migrator
+          POSTGRES_DB: governance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app_migrator"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install golang-migrate
+        run: |
+          curl -sSL https://github.com/golang-migrate/migrate/releases/download/v4.17.1/migrate.linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin migrate
+
+      - name: Apply migrations (first pass)
+        env:
+          DATABASE_URL: "postgres://app_migrator:app_migrator@localhost:5432/governance?sslmode=disable"
+        run: migrate -path migrations -database "$DATABASE_URL" up
+
+      - name: Apply migrations (second pass — must be idempotent)
+        env:
+          DATABASE_URL: "postgres://app_migrator:app_migrator@localhost:5432/governance?sslmode=disable"
+        run: migrate -path migrations -database "$DATABASE_URL" up
+
+  # ── Docker build & push ─────────────────────────────────────────────────────
+  docker:
+    name: Docker build & push
+    runs-on: ubuntu-latest
+    needs: [test-unit, test-integration, test-adversarial, test-sdk, migration-guard]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/retrieval-service/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

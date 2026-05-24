@@ -1,0 +1,57 @@
+name: Deploy — staging
+
+on:
+  push:
+    tags:
+      - "v*-rc*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-staging:
+    name: Promote, migrate, integration-test, deploy to staging
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Promote images from dev tag to RC tag
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          RC_TAG: ${{ github.ref_name }}
+        run: |
+          for service in api-gateway pdp proxy schema-crawler; do
+            docker pull "$ECR_REGISTRY/governance-platform/$service:${{ github.sha }}"
+            docker tag  "$ECR_REGISTRY/governance-platform/$service:${{ github.sha }}" \
+                        "$ECR_REGISTRY/governance-platform/$service:$RC_TAG"
+            docker push "$ECR_REGISTRY/governance-platform/$service:$RC_TAG"
+          done
+
+      - name: Migration dry-run
+        run: go run scripts/migrate/main.go --dry-run --env staging
+
+      - name: Terraform apply (staging)
+        working-directory: infra/terraform/environments/staging
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="image_tag=${{ github.ref_name }}"
+
+      - name: Integration tests
+        run: go test ./... -run Integration -tags integration
+
+      - name: Publish DORA metrics
+        run: |
+          echo "deployment_event service=all env=staging sha=${{ github.sha }} outcome=success" \
+            | curl -s -XPOST "${{ secrets.OTEL_METRICS_ENDPOINT }}/v1/events" \
+              -H "Content-Type: application/json" -d @-

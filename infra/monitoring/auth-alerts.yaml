@@ -1,0 +1,156 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: auth-alerts
+  namespace: platform
+  labels:
+    release: prometheus
+    app: api-gateway
+spec:
+  groups:
+    - name: auth.slos
+      interval: 30s
+      rules:
+
+        # ── Login failure spike ───────────────────────────────────────────────
+        # Alert when the login failure rate is 10× the baseline over 5 minutes.
+        # Indicates brute-force, credential stuffing, or a misconfiguration.
+        - alert: AuthLoginFailureSpike
+          expr: |
+            rate(auth_failed_total[5m])
+              > 10 * avg_over_time(rate(auth_failed_total[5m])[1h:5m])
+          for: 2m
+          labels:
+            severity: page
+            team: security
+          annotations:
+            summary: "Auth login failure rate spike ({{ $labels.service }})"
+            description: >
+              Login failure rate is {{ $value | humanize }}/s —
+              more than 10× the 1-hour baseline.
+              Possible credential stuffing or misconfiguration.
+            runbook_url: https://docs.platform.io/runbooks/auth-failure-spike
+
+        # ── Token reuse (theft signal) ────────────────────────────────────────
+        - alert: AuthTokenReuseDetected
+          expr: increase(auth_reuse_detected_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: page
+            team: security
+          annotations:
+            summary: "Refresh token reuse detected — possible token theft"
+            description: >
+              {{ $value }} refresh token reuse event(s) in the last 5 minutes.
+              Affected sessions have been force-revoked.
+            runbook_url: https://docs.platform.io/runbooks/token-reuse
+
+        # ── JWT replay attempts ────────────────────────────────────────────────
+        # High volume → possible replay attack; single events are normal test noise.
+        - alert: AuthJWTReplayAttempt
+          expr: increase(auth_replay_total[15m]) > 5
+          for: 0m
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: "Elevated JWT replay attempts ({{ $labels.service }})"
+            description: >
+              {{ $value }} JWT replay attempt(s) detected in the last 15 minutes.
+              Review security events in ClickHouse audit log.
+            runbook_url: https://docs.platform.io/runbooks/jwt-replay
+
+        # ── IdP error rate ────────────────────────────────────────────────────
+        - alert: AuthIdPErrorRate
+          expr: |
+            rate(auth_idp_errors_total[5m])
+              / rate(auth_login_attempts_total[5m]) > 0.01
+          for: 2m
+          labels:
+            severity: page
+            team: oncall
+          annotations:
+            summary: "IdP error rate exceeds 1% ({{ $labels.service }})"
+            description: >
+              IdP error rate is {{ $value | humanizePercentage }} of login attempts.
+              Login may be degraded for all tenants.
+            runbook_url: https://docs.platform.io/runbooks/idp-error-rate
+
+        # ── Gateway auth overhead SLO ─────────────────────────────────────────
+        # p99 < 5 ms for hot path (JWT verify + Redis cache hit).
+        - alert: AuthGatewayLatencyHigh
+          expr: |
+            histogram_quantile(0.99,
+              rate(auth_jwt_verify_duration_seconds_bucket[5m])
+            ) > 0.005
+          for: 5m
+          labels:
+            severity: warning
+            team: oncall
+          annotations:
+            summary: "JWT verify p99 exceeds 5 ms SLO"
+            description: >
+              JWT verification p99 latency is {{ $value | humanizeDuration }}.
+              SLO is 5 ms. Possible Redis overload or CPU saturation.
+            runbook_url: https://docs.platform.io/runbooks/auth-latency
+
+        # ── Role resolution cold-path latency ─────────────────────────────────
+        # p99 < 25 ms for cold path (cache miss → DB).
+        - alert: AuthRoleResolveLatencyHigh
+          expr: |
+            histogram_quantile(0.99,
+              rate(auth_role_resolve_duration_seconds_bucket[5m])
+            ) > 0.025
+          for: 5m
+          labels:
+            severity: warning
+            team: oncall
+          annotations:
+            summary: "Role resolution p99 exceeds 25 ms SLO"
+            description: >
+              Role resolve p99 latency is {{ $value | humanizeDuration }}.
+              SLO is 25 ms. Check DB query plan or connection pool saturation.
+
+        # ── Clock drift ───────────────────────────────────────────────────────
+        - alert: NTPClockDrift
+          expr: abs(node_timex_offset_seconds) > 5
+          for: 1m
+          labels:
+            severity: warning
+            team: oncall
+          annotations:
+            summary: "NTP clock drift > 5 s on {{ $labels.instance }}"
+            description: >
+              Clock offset is {{ $value | humanizeDuration }}.
+              JWT validation may reject valid tokens or accept expired ones.
+            runbook_url: https://docs.platform.io/runbooks/clock-drift
+
+        # ── Redis unavailability (auth degraded) ──────────────────────────────
+        - alert: AuthRedisDown
+          expr: up{job="redis"} == 0
+          for: 1m
+          labels:
+            severity: page
+            team: oncall
+          annotations:
+            summary: "Redis is down — auth JTI store and role cache unavailable"
+            description: >
+              Redis has been unreachable for >1 minute.
+              New JWT logins will be rejected (fail-closed on JTI store).
+              Role resolution falls back to PostgreSQL.
+            runbook_url: https://docs.platform.io/runbooks/redis-down
+
+    - name: auth.recording
+      interval: 60s
+      rules:
+        # Pre-compute login success rate for SLO dashboards.
+        - record: job:auth_login_success_rate:rate5m
+          expr: |
+            rate(auth_login_success_total[5m])
+              / rate(auth_login_attempts_total[5m])
+
+        # Pre-compute cache hit ratio for role resolver.
+        - record: job:auth_role_cache_hit_ratio:rate5m
+          expr: |
+            rate(auth_role_cache_hits_total[5m])
+              / rate(auth_role_resolve_total[5m])

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: retrieval-service
+description: Phase 8 — Permission-Aware Retrieval service (AllowedSnapshot + Doc RAG + LLM routing)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

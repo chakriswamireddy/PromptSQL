@@ -1,0 +1,85 @@
+replicaCount: 3
+
+image:
+  repository: ghcr.io/governance-platform/proxy
+  pullPolicy: IfNotPresent
+  tag: ""  # overridden by ArgoCD / CI with image digest
+
+calciteSidecar:
+  image:
+    repository: ghcr.io/governance-platform/proxy-calcite-sidecar
+    pullPolicy: IfNotPresent
+    tag: ""
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "1Gi"
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/proxy-irsa
+  name: "proxy"
+
+service:
+  proxyPort: 5433   # PG wire protocol
+  metricsPort: 9094 # Prometheus
+  httpPort: 9098    # health
+
+resources:
+  requests:
+    cpu: "200m"
+    memory: "128Mi"
+  limits:
+    cpu: "2"
+    memory: "512Mi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+  # Also scale on rewrite latency when KEDA is available.
+
+podDisruptionBudget:
+  minAvailable: 2
+
+networkPolicy:
+  enabled: true
+  # Allow ingress on PG port only from authorised namespaces.
+  allowedNamespaceLabels:
+    - governance-platform/api-gateway
+    - governance-platform/admin-console
+
+env:
+  PROXY_ADDR: ":5433"
+  METRICS_ADDR: ":9094"
+  HTTP_ADDR: ":9098"
+  DEPLOYMENT_ENVIRONMENT: "production"
+  OTEL_SAMPLING_RATE: "1.0"
+  CALCITE_GRPC_ADDR: "localhost:9095"  # sidecar is in the same pod
+  DEFAULT_MAX_ROWS: "1000000"
+  DEFAULT_MAX_COST: "10000"
+  RESULT_SET_ROW_CAP: "100000"
+  SYNC_INTERVAL: "1h"
+
+secretRef:
+  name: proxy-secrets
+  # Keys expected:
+  #   DATABASE_URL
+  #   BACKEND_DATABASE_URL
+  #   REDIS_URL
+  #   PDP_GRPC_ADDR
+  #   HMAC_SECRETS
+  #   UNLEASH_API_TOKEN
+  #   OTEL_EXPORTER_OTLP_ENDPOINT
+
+otel:
+  enabled: true
+  endpoint: "http://otel-collector.observability:4317"

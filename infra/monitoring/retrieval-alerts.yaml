@@ -1,0 +1,146 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: retrieval-service-alerts
+  namespace: monitoring
+  labels:
+    app: retrieval-service
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── SLO alerts ─────────────────────────────────────────────────────────────
+    - name: retrieval-service.slos
+      interval: 60s
+      rules:
+
+        # Snapshot p95 latency breaches 100 ms warm-cache SLO.
+        - alert: SnapshotLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              rate(retrieval_snapshot_duration_seconds_bucket{cache_hit="true"}[10m])
+            ) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Snapshot p95 warm-cache latency {{ $value | humanizeDuration }} > 100 ms"
+            description: "AllowedSnapshot warm-cache p95 exceeds the 100 ms SLO. Check Redis connectivity and eviction rate."
+
+        # Doc retrieval p95 latency breaches 300 ms SLO.
+        - alert: DocRetrievalLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              rate(retrieval_docs_duration_seconds_bucket[10m])
+            ) > 0.3
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Doc retrieval p95 latency {{ $value | humanizeDuration }} > 300 ms"
+            description: "Doc retrieval p95 exceeds the 300 ms SLO for topK=8. Check pgvector index health and EXPLAIN ANALYZE."
+
+        # Snapshot cache hit rate dropped below 90% under load.
+        - alert: SnapshotCacheHitRateLow
+          expr: |
+            sum(rate(retrieval_cache_hits_total{cache_type="snapshot"}[10m]))
+            /
+            (sum(rate(retrieval_cache_hits_total{cache_type="snapshot"}[10m]))
+             + sum(rate(retrieval_cache_misses_total{cache_type="snapshot"}[10m])))
+            < 0.9
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Snapshot cache hit rate {{ $value | humanizePercentage }} < 90%"
+            description: "Snapshot cache hit rate is below the 90% SLO. Redis TTL may be too short or eviction rate too high."
+
+        # Injection defense trigger spike — possible active attack.
+        - alert: InjectionDefenseSpiking
+          expr: |
+            sum(rate(retrieval_injection_defense_triggers_total[5m])) > 1
+          for: 2m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "Injection defense triggers {{ $value }}/s over 5 minutes"
+            description: "Prompt injection defense is firing frequently. An adversarial corpus may have been ingested. Review quarantined chunks immediately."
+
+        # Restricted content routed to a non-private provider (routing bug).
+        - alert: RestrictedContentRoutingRefused
+          expr: |
+            sum(rate(retrieval_llm_route_total{classification="restricted",outcome="refused"}[5m])) > 0
+          for: 0m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Restricted content routing refused {{ $value }}/s"
+            description: "Requests with restricted content could not be routed to a private provider. Admin must configure a private-cloud route or user requests are being dropped."
+
+        # Snapshot truncations are high — AI will operate on incomplete schema.
+        - alert: SnapshotTruncationRateHigh
+          expr: |
+            sum(rate(retrieval_snapshot_truncations_total[10m])) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Snapshot truncation rate {{ $value }}/s"
+            description: "Many snapshots are being truncated due to token budget. AI may query columns it cannot see. Consider raising token budget or reducing schema scope."
+
+        # Provider failure rate too high — LLM requests are failing.
+        - alert: LLMProviderFailureRateHigh
+          expr: |
+            sum(rate(retrieval_llm_route_total{outcome="error"}[5m]))
+            /
+            sum(rate(retrieval_llm_route_total[5m]))
+            > 0.01
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "LLM provider failure rate {{ $value | humanizePercentage }} > 1%"
+            description: "More than 1% of LLM routing decisions are ending in provider errors. Check provider health, quota, and network connectivity."
+
+        # Quarantine sweep is not releasing chunks — sweeper may be stuck.
+        - alert: QuarantineSweepStalled
+          expr: |
+            increase(retrieval_quarantine_released_total[2h]) == 0
+          for: 0m
+          labels:
+            severity: info
+            team: platform
+          annotations:
+            summary: "No quarantine releases in the past 2 hours"
+            description: "The quarantine sweeper has not released any chunks. Either no chunks are due, or the sweeper goroutine crashed. Check retrieval-service logs."
+
+    # ── Recording rules ────────────────────────────────────────────────────────
+    - name: retrieval-service.recording
+      interval: 120s
+      rules:
+
+        - record: retrieval:snapshot_cache_hit_ratio:rate5m
+          expr: |
+            sum(rate(retrieval_cache_hits_total{cache_type="snapshot"}[5m]))
+            /
+            (sum(rate(retrieval_cache_hits_total{cache_type="snapshot"}[5m]))
+             + sum(rate(retrieval_cache_misses_total{cache_type="snapshot"}[5m])))
+
+        - record: retrieval:doc_p95_latency:rate10m
+          expr: |
+            histogram_quantile(0.95, rate(retrieval_docs_duration_seconds_bucket[10m]))
+
+        - record: retrieval:snapshot_p95_latency_warm:rate10m
+          expr: |
+            histogram_quantile(0.95,
+              rate(retrieval_snapshot_duration_seconds_bucket{cache_hit="true"}[10m]))
+
+        - record: retrieval:injection_trigger_rate:rate5m
+          expr: sum(rate(retrieval_injection_defense_triggers_total[5m])) by (defense_type, tenant_id)

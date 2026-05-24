@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.next/
+out/
+*.out
+coverage/
+
+# Go
+*.exe
+*.test
+*.prof
+/vendor/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Terraform state
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp
+
+# Docker
+infra/docker-compose.override.yml
+
+# Secrets (belt-and-suspenders; gitleaks is the real guard)
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: audit-chain-verifier
+description: Hourly hash-chain integrity verifier for audit pipeline
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

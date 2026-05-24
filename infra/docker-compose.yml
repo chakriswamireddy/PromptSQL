@@ -1,0 +1,268 @@
+name: governance-platform
+
+# ────────────────────────────────────────────────────────────────────────────
+# Network — all services communicate on this bridge; apps bind to host ports
+# defined in .env so engineers can override collisions.
+# ────────────────────────────────────────────────────────────────────────────
+networks:
+  platform:
+    driver: bridge
+
+# ────────────────────────────────────────────────────────────────────────────
+# Volumes — named so "make down" keeps data; "make nuke" wipes everything.
+# ────────────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+  qdrant_data:
+  clickhouse_data:
+  minio_data:
+  vault_data:
+  grafana_data:
+  prometheus_data:
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16.3
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-governance}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-governance}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2.5-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Kafka (KRaft mode — no ZooKeeper) ─────────────────────────────────────
+  # Only started with: docker compose --profile full up
+  kafka:
+    image: apache/kafka:3.7.0
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:${KAFKA_PORT:-9092}
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: governance-local-cluster
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
+    networks: [platform]
+    profiles: ["full"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Qdrant (vector store) ─────────────────────────────────────────────────
+  # Only started with: docker compose --profile full up
+  qdrant:
+    image: qdrant/qdrant:v1.9.4
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+    networks: [platform]
+    profiles: ["full"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── ClickHouse (audit query store) ────────────────────────────────────────
+  # Only started with: docker compose --profile full up
+  # Native protocol on 9100 (host) → 9000 (container) to avoid MinIO collision.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.5
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: audit
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "127.0.0.1:${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "127.0.0.1:${CLICKHOUSE_PORT:-9100}:9000"
+    networks: [platform]
+    profiles: ["full"]
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── MinIO (S3 + Object Lock) ───────────────────────────────────────────────
+  minio:
+    image: minio/minio:RELEASE.2024-06-04T19-20-08Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── HashiCorp Vault (dev mode — never in cloud) ───────────────────────────
+  vault:
+    image: hashicorp/vault:1.17.0
+    restart: unless-stopped
+    cap_add: [IPC_LOCK]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-root}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "127.0.0.1:${VAULT_PORT:-8200}:8200"
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "vault status"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Jaeger (all-in-one trace backend) ─────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:${JAEGER_UI_PORT:-16686}:16686"
+      - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${OTLP_HTTP_PORT:-4318}:4318"
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:16686/ > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Prometheus ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Grafana ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.0.0
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    networks: [platform]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Unleash (feature flags) ───────────────────────────────────────────────
+  unleash:
+    image: unleashorg/unleash-server:6.0.0
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-governance}
+      INIT_CLIENT_API_TOKENS: "default:development.unleash-insecure-api-token"
+    ports:
+      - "127.0.0.1:${UNLEASH_PORT:-4242}:4242"
+    networks: [platform]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4242/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # ── OIDC Mock (fake IdP for local auth) ───────────────────────────────────
+  oidc-mock:
+    image: ghcr.io/navikt/mock-oauth2-server:2.1.7
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: 9080
+      JSON_CONFIG_PATH: /config/mock-oauth2-config.json
+    volumes:
+      - ./oidc-mock:/config:ro
+    ports:
+      - "127.0.0.1:${OIDC_PORT:-9080}:9080"
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9080/.well-known/openid-configuration"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
