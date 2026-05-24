@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ai-orchestrator
+description: Phase 9 — AI PAP Graph (LangGraph policy authoring, constrained decoding, human approval)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

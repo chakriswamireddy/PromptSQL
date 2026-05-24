@@ -1,0 +1,66 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/governance-platform/ai-orchestrator
+  pullPolicy: IfNotPresent
+  tag: ""
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/ai-orchestrator-irsa
+  name: "ai-orchestrator"
+
+service:
+  port: 8084
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 60   # LLM calls are bursty
+
+podDisruptionBudget:
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+
+env:
+  HTTP_ADDR: ":8084"
+  DEPLOYMENT_ENVIRONMENT: "production"
+  OTEL_SAMPLING_RATE: "1.0"
+  PDP_ADDR: "pdp:9090"
+  DEFAULT_DRAFTER_PROVIDER: "anthropic"
+  DEFAULT_DRAFTER_MODEL: "claude-sonnet-4-6"
+  DEFAULT_INTENT_MODEL: "claude-haiku-4-5-20251001"
+  DEFAULT_EXPLAINER_MODEL: "claude-haiku-4-5-20251001"
+  FALLBACK_DRAFTER_PROVIDER: "openai"
+  FALLBACK_DRAFTER_MODEL: "gpt-4o"
+  GRAPH_WALL_CLOCK_BUDGET_MS: "30000"
+  DRAFT_CACHE_TTL_SEC: "3600"
+  EXPLAINER_CACHE_TTL_SEC: "7200"
+
+secretRef:
+  name: ai-orchestrator-secrets
+  # Keys expected in the Secret:
+  #   DATABASE_URL
+  #   REDIS_URL
+  #   ANTHROPIC_API_KEY
+  #   OPENAI_API_KEY
+  #   KAFKA_BROKERS
+  #   AUDIT_HMAC_KEY
+  #   UNLEASH_API_TOKEN
+  #   OTEL_EXPORTER_OTLP_ENDPOINT
+
+otel:
+  enabled: true
+  endpoint: "http://otel-collector.observability:4317"

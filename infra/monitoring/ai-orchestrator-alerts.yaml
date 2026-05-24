@@ -1,0 +1,141 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ai-orchestrator-alerts
+  namespace: monitoring
+  labels:
+    app: ai-orchestrator
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── SLO alerts ─────────────────────────────────────────────────────────────
+    - name: ai-orchestrator.slos
+      interval: 60s
+      rules:
+
+        # Graph error rate > 5% for 5 min
+        - alert: PapGraphErrorRateHigh
+          expr: |
+            sum(rate(pap_graph_runs_total{outcome="error"}[5m]))
+            /
+            sum(rate(pap_graph_runs_total[5m]))
+            > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PAP graph error rate {{ $value | humanizePercentage }} > 5%"
+            description: "More than 5% of PAP graph runs are failing. Check LLM provider connectivity and validator errors."
+
+        # End-to-end p95 latency > 25 s (SLO: < 30 s)
+        - alert: PapGraphLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              rate(pap_graph_duration_seconds_bucket[10m])
+            ) > 25
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PAP graph p95 latency {{ $value | humanizeDuration }} > 25 s"
+            description: "PAP graph p95 latency approaching the 30 s wall-clock budget. Check LLM provider latency and Redis cache hit rate."
+
+        # Per-tenant cost exceeds 200% of 7-day baseline
+        - alert: PapCostRunaway
+          expr: |
+            sum by (tenant_id) (increase(pap_llm_cost_usd_total[1h]))
+            >
+            2 * sum by (tenant_id) (increase(pap_llm_cost_usd_total[7d])) / (7 * 24)
+          for: 0m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Tenant {{ $labels.tenant_id }} PAP cost runaway"
+            description: "LLM cost for this tenant is over 200% of the 7-day hourly baseline. Enforce per-tenant daily cap."
+
+        # Injection refusal spike — possible active attack
+        - alert: PapInjectionAttemptSpike
+          expr: |
+            sum(rate(pap_injection_refusals_total[5m])) > 0.5
+          for: 2m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "PAP injection refusals {{ $value }}/s"
+            description: "Prompt injection attempts are spiking. Review audit logs and consider temporary rate limiting for affected tenants."
+
+        # Token budget throttles spiking
+        - alert: PapTokenBudgetThrottlesHigh
+          expr: |
+            sum(rate(pap_token_budget_throttles_total[5m])) > 1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PAP token budget throttles {{ $value }}/s"
+            description: "Many requests are being throttled by token budgets. Review per-tenant limits or investigate abuse."
+
+        # Policy validation failure spike
+        - alert: PapValidationFailureRateHigh
+          expr: |
+            sum(rate(pap_validation_failures_total[5m])) > 0.2
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PAP policy validation failures {{ $value }}/s"
+            description: "Policy validation is failing frequently. Schema crawler may have stale metadata or the LLM is hallucinating column names."
+
+        # No approvals or rejections in 24h — approval surface may be broken
+        - alert: PapApprovalSurfaceSilent
+          expr: |
+            increase(pap_approval_actions_total[24h]) == 0
+          for: 0m
+          labels:
+            severity: info
+            team: platform
+          annotations:
+            summary: "No PAP approval actions in 24 hours"
+            description: "No approve or reject actions recorded. The approval surface may be broken or no drafts were submitted."
+
+        # LLM call failure rate > 2%
+        - alert: PapLLMCallFailureRateHigh
+          expr: |
+            sum(rate(pap_llm_calls_total{outcome="error"}[5m]))
+            /
+            sum(rate(pap_llm_calls_total[5m]))
+            > 0.02
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PAP LLM call failure rate {{ $value | humanizePercentage }} > 2%"
+            description: "LLM API calls are failing. Check provider keys, quota, and network."
+
+    # ── Recording rules ────────────────────────────────────────────────────────
+    - name: ai-orchestrator.recording
+      interval: 120s
+      rules:
+
+        - record: pap:graph_error_rate:rate5m
+          expr: |
+            sum(rate(pap_graph_runs_total{outcome="error"}[5m]))
+            / sum(rate(pap_graph_runs_total[5m]))
+
+        - record: pap:graph_p95_latency:rate10m
+          expr: |
+            histogram_quantile(0.95, rate(pap_graph_duration_seconds_bucket[10m]))
+
+        - record: pap:cost_per_tenant_hourly:rate1h
+          expr: sum by (tenant_id) (increase(pap_llm_cost_usd_total[1h]))
+
+        - record: pap:injection_refusal_rate:rate5m
+          expr: sum(rate(pap_injection_refusals_total[5m])) by (tenant_id)
