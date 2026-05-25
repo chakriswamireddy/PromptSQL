@@ -11,6 +11,8 @@ use (
 	./apps/audit-chain-verifier
 	./apps/retrieval-service
 	./apps/native-policy-syncer
+	./apps/live-feed-broadcaster
+	./apps/webhook-fanout
 	./pkg/auth
 	./pkg/audit
 	./pkg/calcitepb

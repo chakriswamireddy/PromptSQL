@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "live-feed-broadcaster.fullname" . }}
+  labels: {{ include "live-feed-broadcaster.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{ include "live-feed-broadcaster.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "live-feed-broadcaster.labels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.service.metricsPort }}"
+    spec:
+      serviceAccountName: {{ include "live-feed-broadcaster.fullname" . }}
+      containers:
+        - name: live-feed-broadcaster
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+            - containerPort: {{ .Values.service.metricsPort }}
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: UNLEASH_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: unleash-token
+                  key: token
+            - name: JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-keys
+                  key: public-key
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources: {{ toYaml .Values.resources | nindent 12 }}

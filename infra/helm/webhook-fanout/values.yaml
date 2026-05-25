@@ -1,0 +1,52 @@
+replicaCount: 2
+
+image:
+  repository: governance-platform/webhook-fanout
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  metricsPort: 9106
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+env:
+  ENVIRONMENT: production
+  KAFKA_BROKERS: kafka:9092
+  KAFKA_TOPIC_ACCESS: audit.access.production
+  KAFKA_TOPIC_POLICY: audit.policy.production
+  KAFKA_TOPIC_SYSTEM: audit.system.production
+  KAFKA_CONSUMER_GROUP: webhook-fanout
+  METRICS_ADDR: ":9106"
+  DELIVERY_TIMEOUT: "30s"
+  MAX_RETRIES: "5"
+  MAX_PAYLOAD_BYTES: "65536"
+  CIRCUIT_BREAKER_RATE: "0.5"
+  CIRCUIT_BREAKER_WINDOW: "1m"
+  SCHEDULER_INTERVAL: "30s"
+  SCHEDULER_JITTER: "5s"
+  OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+  UNLEASH_URL: http://unleash:4242/api
+  VAULT_ADDR: http://vault:8200
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: ""

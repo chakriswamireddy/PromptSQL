@@ -1,0 +1,6 @@
+apiVersion: v2
+name: live-feed-broadcaster
+description: "Phase 12: WebSocket live-feed broadcaster"
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

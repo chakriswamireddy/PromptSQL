@@ -10,6 +10,8 @@ import {
   Database,
   Activity,
   FlaskConical,
+  Radio,
+  Webhook,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +30,8 @@ function navItems(slug: string): NavItem[] {
     { label: "Roles", href: `${base}/roles`, icon: <UserCircle2 className="h-4 w-4" /> },
     { label: "Data Sources", href: `${base}/data-sources`, icon: <Database className="h-4 w-4" /> },
     { label: "Audit Trail", href: `${base}/audit`, icon: <Activity className="h-4 w-4" /> },
+    { label: "Live Activity", href: `${base}/live`, icon: <Radio className="h-4 w-4" /> },
+    { label: "Webhooks", href: `${base}/webhooks`, icon: <Webhook className="h-4 w-4" /> },
   ];
 }
 
@@ -65,7 +69,7 @@ export function SideNav({ tenantSlug }: { tenantSlug: string }) {
       </nav>
 
       <div className="border-t px-2 py-3 text-xs text-muted-foreground text-center">
-        Governance Platform v0.4
+        Governance Platform v0.5
       </div>
     </aside>
   );

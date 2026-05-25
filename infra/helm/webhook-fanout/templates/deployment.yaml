@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webhook-fanout.fullname" . }}
+  labels: {{ include "webhook-fanout.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{ include "webhook-fanout.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "webhook-fanout.labels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.service.metricsPort }}"
+    spec:
+      serviceAccountName: {{ include "webhook-fanout.fullname" . }}
+      containers:
+        - name: webhook-fanout
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.metricsPort }}
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: governance-db
+                  key: dsn
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vault-token
+                  key: token
+            - name: UNLEASH_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: unleash-token
+                  key: token
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.service.metricsPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.service.metricsPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources: {{ toYaml .Values.resources | nindent 12 }}

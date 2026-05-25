@@ -1,0 +1,6 @@
+apiVersion: v2
+name: webhook-fanout
+description: "Phase 12: Webhook fanout consumer with retries, DLQ, and saved-query scheduler"
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

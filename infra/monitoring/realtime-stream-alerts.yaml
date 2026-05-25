@@ -1,0 +1,125 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: realtime-stream-alerts
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: live-feed-broadcaster
+      rules:
+        - alert: LiveFeedKafkaConsumerLagHigh
+          expr: |
+            kafka_consumer_lag_seconds{consumer="live-feed-broadcaster"} > 60
+          for: 5m
+          labels:
+            severity: warning
+            service: live-feed-broadcaster
+          annotations:
+            summary: "Live-feed Kafka consumer lag > 60s"
+            description: "Consumer lag for {{ $labels.topic }} is {{ $value | humanizeDuration }}. Events may arrive stale in the UI."
+
+        - alert: LiveFeedDropRateHigh
+          expr: |
+            rate(wsfeed_dropped_total[5m])
+              / (rate(wsfeed_broadcast_total[5m]) + rate(wsfeed_dropped_total[5m]) + 0.0001)
+              > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            service: live-feed-broadcaster
+          annotations:
+            summary: "WebSocket drop rate > 5% for tenant {{ $labels.tenant_id }}"
+            description: "{{ $value | humanizePercentage }} of events are being dropped due to slow consumers."
+
+        - alert: LiveFeedNoActiveConnections
+          expr: |
+            sum(wsfeed_active_connections) == 0
+          for: 15m
+          labels:
+            severity: info
+            service: live-feed-broadcaster
+          annotations:
+            summary: "No active WebSocket connections for 15 minutes"
+            description: "The live-feed broadcaster has no connected clients."
+
+    - name: webhook-fanout
+      rules:
+        - alert: WebhookFanoutKafkaConsumerLagHigh
+          expr: |
+            webhook_fanout_kafka_lag_seconds > 60
+          for: 5m
+          labels:
+            severity: warning
+            service: webhook-fanout
+          annotations:
+            summary: "Webhook-fanout Kafka consumer lag > 60s"
+            description: "Topic {{ $labels.topic }} lag is {{ $value | humanizeDuration }}. Webhook delivery may be delayed."
+
+        - alert: WebhookEndpointFailureRateHigh
+          expr: |
+            rate(webhook_delivery_total{result="failed"}[5m])
+              / (rate(webhook_delivery_total[5m]) + 0.0001)
+              > 0.5
+          for: 5m
+          labels:
+            severity: critical
+            service: webhook-fanout
+          annotations:
+            summary: "Webhook delivery failure rate > 50%"
+            description: "{{ $value | humanizePercentage }} of webhook deliveries are failing over the last 5 minutes."
+
+        - alert: WebhookDLQGrowthHigh
+          expr: |
+            rate(webhook_dlq_total[1h]) * 3600 > 100
+          for: 15m
+          labels:
+            severity: warning
+            service: webhook-fanout
+          annotations:
+            summary: "Webhook DLQ growing > 100 entries/hour for tenant {{ $labels.tenant_id }}"
+            description: "The webhook dead-letter queue is accumulating at {{ $value | humanize }} entries/hour."
+
+        - alert: WebhookSSRFAttempt
+          expr: |
+            increase(webhook_ssrf_blocked_total[10m]) > 0
+          labels:
+            severity: critical
+            service: webhook-fanout
+          annotations:
+            summary: "SSRF webhook delivery attempt blocked"
+            description: "{{ $value }} SSRF attempt(s) blocked in the last 10 minutes. Investigate subscription {{ $labels.subscription_id }}."
+
+        - alert: WebhookDeliveryP95Slow
+          expr: |
+            histogram_quantile(0.95, rate(webhook_delivery_duration_seconds_bucket[5m])) > 5
+          for: 5m
+          labels:
+            severity: warning
+            service: webhook-fanout
+          annotations:
+            summary: "Webhook delivery p95 latency > 5s"
+            description: "p95 delivery time is {{ $value | humanizeDuration }}. SLO target is < 5s."
+
+        - alert: SavedQueryRunErrors
+          expr: |
+            rate(saved_query_runs_total{status!="ok"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: webhook-fanout
+          annotations:
+            summary: "Saved query scheduler errors for tenant {{ $labels.tenant_id }}"
+            description: "{{ $value | humanize }}/s saved query runs failing with status {{ $labels.status }}."
+
+        - alert: WebhookFanoutDown
+          expr: |
+            up{job="webhook-fanout"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: webhook-fanout
+          annotations:
+            summary: "Webhook-fanout instance is down"
+            description: "Instance {{ $labels.instance }} has been unreachable for 2 minutes."

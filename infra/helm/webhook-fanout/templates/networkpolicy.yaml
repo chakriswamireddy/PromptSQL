@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webhook-fanout.fullname" . }}
+spec:
+  podSelector:
+    matchLabels: {{ include "webhook-fanout.labels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: {{ .Values.service.metricsPort }}
+  egress:
+    - ports:
+        - port: 9092   # Kafka
+        - port: 5432   # PostgreSQL
+        - port: 8200   # Vault
+        - port: 4242   # Unleash
+        - port: 4317   # OTel collector
+        - port: 443    # Customer webhook endpoints (HTTPS)

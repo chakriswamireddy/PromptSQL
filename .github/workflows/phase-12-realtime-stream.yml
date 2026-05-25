@@ -1,0 +1,171 @@
+name: Phase 12 — Real-Time Event Stream
+
+on:
+  push:
+    paths:
+      - "apps/live-feed-broadcaster/**"
+      - "apps/webhook-fanout/**"
+      - "migrations/0023_realtime_stream.up.sql"
+      - "infra/helm/live-feed-broadcaster/**"
+      - "infra/helm/webhook-fanout/**"
+  pull_request:
+    paths:
+      - "apps/live-feed-broadcaster/**"
+      - "apps/webhook-fanout/**"
+      - "migrations/0023_realtime_stream.up.sql"
+
+env:
+  GO_VERSION: "1.22"
+  POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/governance_test?sslmode=disable
+
+jobs:
+  # ── live-feed-broadcaster ────────────────────────────────────────────────────
+  live-feed-broadcaster-test:
+    name: live-feed-broadcaster unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run tests
+        working-directory: apps/live-feed-broadcaster
+        run: go test ./... -race -count=1
+
+  live-feed-broadcaster-build:
+    name: live-feed-broadcaster Docker build
+    runs-on: ubuntu-latest
+    needs: live-feed-broadcaster-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/live-feed-broadcaster/Dockerfile
+          push: false
+          tags: governance-platform/live-feed-broadcaster:${{ github.sha }}
+
+  # ── webhook-fanout ───────────────────────────────────────────────────────────
+  webhook-fanout-unit:
+    name: webhook-fanout unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run unit tests (no DB)
+        working-directory: apps/webhook-fanout
+        run: go test -run 'TestSSRF|TestHMAC' ./... -race -count=1 -v
+
+  webhook-fanout-integration:
+    name: webhook-fanout integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: governance_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Apply migrations
+        run: |
+          go run ./scripts/migrate \
+            -dsn "${{ env.POSTGRES_DSN }}" \
+            -dir migrations/ \
+            up
+        env:
+          DATABASE_DSN: ${{ env.POSTGRES_DSN }}
+
+      - name: Run integration tests
+        working-directory: apps/webhook-fanout
+        run: go test -run 'Integration' ./... -race -count=1 -timeout 120s
+        env:
+          DATABASE_DSN: ${{ env.POSTGRES_DSN }}
+
+  webhook-fanout-ssrf-probe:
+    name: SSRF security probe
+    runs-on: ubuntu-latest
+    needs: webhook-fanout-unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run SSRF tests
+        working-directory: apps/webhook-fanout
+        run: go test -run 'TestSSRF' ./... -v -count=1
+
+  webhook-fanout-build:
+    name: webhook-fanout Docker build
+    runs-on: ubuntu-latest
+    needs: [webhook-fanout-unit, webhook-fanout-ssrf-probe]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/webhook-fanout/Dockerfile
+          push: false
+          tags: governance-platform/webhook-fanout:${{ github.sha }}
+
+  # ── Migration guard ──────────────────────────────────────────────────────────
+  migration-guard:
+    name: Migration forward-only guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify no .down.sql for Phase 12 migration
+        run: |
+          if ls migrations/0023_*.down.sql 2>/dev/null; then
+            echo "ERROR: down migration file found for Phase 12. Down migrations are forbidden."
+            exit 1
+          fi
+          echo "OK: no down migration files for Phase 12"
+
+  # ── Helm lint ────────────────────────────────────────────────────────────────
+  helm-lint:
+    name: Helm chart lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v3
+        with:
+          version: v3.14.0
+
+      - name: Lint live-feed-broadcaster chart
+        run: helm lint infra/helm/live-feed-broadcaster
+
+      - name: Lint webhook-fanout chart
+        run: helm lint infra/helm/webhook-fanout
