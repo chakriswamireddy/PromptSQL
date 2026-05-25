@@ -18,6 +18,11 @@ type config struct {
 	DatabaseURL string
 	RedisURL    string
 
+	// Engine specifies the database engine to crawl.
+	// Default: "postgres". For multi-db, set ENGINE env var to one of:
+	// postgres | mysql | sqlserver | oracle | snowflake | bigquery | databricks | mongodb
+	Engine string
+
 	// Crawler settings.
 	CrawlInterval    time.Duration
 	CrawlConcurrency int
@@ -54,6 +59,7 @@ func loadConfig() config {
 		UnleashToken:       getEnv("UNLEASH_API_TOKEN", ""),
 		DatabaseURL:        getEnv("DATABASE_URL", "postgres://app_write:app_write@localhost:5432/governance?sslmode=disable"),
 		RedisURL:           getEnv("REDIS_URL", "redis://localhost:6379/0"),
+		Engine:             getEnv("ENGINE", "postgres"),
 		CrawlInterval:      crawlInterval,
 		CrawlConcurrency:   crawlConc,
 		SampleMaxRows:      sampleMax,

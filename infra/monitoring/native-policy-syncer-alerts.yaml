@@ -1,0 +1,173 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: native-policy-syncer-alerts
+  namespace: monitoring
+  labels:
+    app: native-policy-syncer
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── Service availability ───────────────────────────────────────────────────
+    - name: native-policy-syncer.availability
+      interval: 30s
+      rules:
+
+        # 1. NativePolicySyncerDown — service has no ready pods.
+        - alert: NativePolicySyncerDown
+          expr: |
+            absent(up{job="native-policy-syncer"} == 1)
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "native-policy-syncer is down"
+            description: |
+              No running instances of native-policy-syncer detected for > 2 minutes.
+              Policy changes will not be propagated to engine-native constructs.
+              Check Deployment status and logs.
+            runbook_url: "https://docs.governance-platform.internal/runbooks/native-policy-syncer"
+
+        # 2. NativePolicySyncHighErrorRate — > 5% of sync operations are erroring.
+        - alert: NativePolicySyncHighErrorRate
+          expr: |
+            (
+              sum(rate(multi_db_sync_errors_total[5m]))
+              /
+              (sum(rate(multi_db_policies_synced_total[5m])) + sum(rate(multi_db_sync_errors_total[5m])) + 0.001)
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Native policy sync error rate {{ $value | humanizePercentage }} > 5%"
+            description: |
+              More than 5% of native policy sync operations are failing.
+              Engines may have stale or missing enforcement constructs.
+              Check multi_db_sync_errors_total{engine} for the affected engine.
+
+        # 3. NativePolicySyncStale — no successful sync in 2h for an enabled engine.
+        - alert: NativePolicySyncStale
+          expr: |
+            (time() - multi_db_last_sync_age_seconds) > 7200
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "No successful sync for engine {{ $labels.engine }} / DS {{ $labels.data_source_id }} in > 2h"
+            description: |
+              The native-policy-syncer has not successfully synced policies
+              to engine {{ $labels.engine }} (data_source {{ $labels.data_source_id }})
+              for more than 2 hours.  Policies may be drifted.
+
+        # 4. NativePolicySyncDurationHigh — p99 sync duration > 30s.
+        - alert: NativePolicySyncDurationHigh
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(multi_db_sync_duration_seconds_bucket[15m])) by (le, engine)
+            ) > 30
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Sync p99 duration {{ $value | humanizeDuration }} > 30s for engine {{ $labels.engine }}"
+            description: |
+              The 99th-percentile sync duration for engine {{ $labels.engine }} exceeds 30 seconds.
+              This may indicate a slow engine, large policy set, or network latency.
+
+    # ── Process health ─────────────────────────────────────────────────────────
+    - name: native-policy-syncer.process
+      interval: 60s
+      rules:
+
+        # 5. NativePolicySyncerRestartLoop — container has restarted > 3 times in 15m.
+        - alert: NativePolicySyncerRestartLoop
+          expr: |
+            increase(kube_pod_container_status_restarts_total{
+              container="native-policy-syncer"
+            }[15m]) > 3
+          for: 0m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "native-policy-syncer pod {{ $labels.pod }} restarted {{ $value }} times in 15 minutes"
+            description: |
+              The native-policy-syncer container is crash-looping.
+              Check pod logs for panic / fatal errors.
+
+    # ── Engine-level connectivity ──────────────────────────────────────────────
+    - name: native-policy-syncer.engines
+      interval: 60s
+      rules:
+
+        # 6. EngineConnectorDown — a specific engine connector reports down for > 10m.
+        - alert: EngineConnectorDown
+          expr: |
+            multi_db_connector_up == 0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Engine {{ $labels.engine }} connector down for data source {{ $labels.data_source_id }}"
+            description: |
+              The connector for engine {{ $labels.engine }} (data_source {{ $labels.data_source_id }})
+              has reported status=0 (unreachable) for more than 10 minutes.
+              Verify network connectivity, Vault credentials, and engine health.
+
+        # 7. NativePolicyDriftDetected — policy version mismatch count exceeds threshold.
+        - alert: NativePolicyDriftDetected
+          expr: |
+            sum(multi_db_policy_drift_count) by (engine) > 2
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "{{ $value }} data sources have policy drift on engine {{ $labels.engine }}"
+            description: |
+              More than 2 data sources on engine {{ $labels.engine }} have an applied
+              policy version that differs from the current active policy_set_version.
+              The syncer may be failing or running too infrequently.
+
+    # ── Storage ───────────────────────────────────────────────────────────────
+    - name: native-policy-syncer.storage
+      interval: 120s
+      rules:
+
+        # 8. NativeEnforcementLogFull — partition approaching 80% of its estimated row capacity.
+        # The threshold is deliberately conservative — alert before the partition fills.
+        - alert: NativeEnforcementLogFull
+          expr: |
+            pg_stat_user_tables_n_live_tup{relname=~"native_enforcement_log_.*"} > 80000000
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "native_enforcement_log partition {{ $labels.relname }} has {{ $value | humanize }} rows"
+            description: |
+              A monthly partition of native_enforcement_log is approaching 80 million rows.
+              Verify that the purge / archival job is running and consider adjusting retention.
+
+    # ── Recording rules ────────────────────────────────────────────────────────
+    - name: native-policy-syncer.recording
+      interval: 120s
+      rules:
+        - record: native_sync:error_rate:rate5m
+          expr: |
+            sum(rate(multi_db_sync_errors_total[5m]))
+            /
+            (sum(rate(multi_db_policies_synced_total[5m])) + sum(rate(multi_db_sync_errors_total[5m])) + 0.001)
+
+        - record: native_sync:duration_p99:rate15m
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(multi_db_sync_duration_seconds_bucket[15m])) by (le, engine)
+            )

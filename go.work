@@ -10,9 +10,11 @@ use (
 	./apps/audit-worm-sink
 	./apps/audit-chain-verifier
 	./apps/retrieval-service
+	./apps/native-policy-syncer
 	./pkg/auth
 	./pkg/audit
 	./pkg/calcitepb
+	./pkg/connectors
 	./pkg/db
 	./pkg/telemetry
 	./pkg/featureflags

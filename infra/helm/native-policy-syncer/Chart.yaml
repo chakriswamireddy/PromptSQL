@@ -1,0 +1,11 @@
+apiVersion: v2
+name: native-policy-syncer
+description: |
+  Native Policy Syncer — Phase 11 multi-database enforcement.
+  Translates platform RBAC/ABAC policies to engine-native constructs:
+  PostgreSQL views, MySQL views, SQL Server RLS/DDM, Oracle VPD,
+  Snowflake RAP/DDM, BigQuery authorized views, Databricks Unity Catalog
+  row filters/column masks, and MongoDB aggregation pipeline injections.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

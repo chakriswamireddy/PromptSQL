@@ -83,8 +83,61 @@ features:
       - name: default
 
   # Phase 11 — Multi-Database Support
+  # Parent flag: gates ALL Phase 11 features.  All per-engine flags below are
+  # checked in addition to this parent flag — enabling an engine flag without
+  # this parent flag has no effect.
+  - name: multi-db
+    description: "Phase 11: multi-database expansion — parent gate for all engine connectors"
+    enabled: false
+    strategies:
+      - name: default
+
+  # Per-engine flags allow gradual rollout engine-by-engine.
+  - name: multi-db-mysql
+    description: "Phase 11: MySQL 8.0+ connector (Wave A)"
+    enabled: false
+    strategies:
+      - name: default
+
+  - name: multi-db-sqlserver
+    description: "Phase 11: SQL Server 2019+ / Azure SQL connector (Wave A)"
+    enabled: false
+    strategies:
+      - name: default
+
+  - name: multi-db-oracle
+    description: "Phase 11: Oracle 19c+ connector with VPD enforcement (Wave A)"
+    enabled: false
+    strategies:
+      - name: default
+
+  - name: multi-db-snowflake
+    description: "Phase 11: Snowflake connector — Row Access Policies + DDM (Wave B)"
+    enabled: false
+    strategies:
+      - name: default
+
+  - name: multi-db-bigquery
+    description: "Phase 11: BigQuery connector — authorized views + Policy Tags stub (Wave B)"
+    enabled: false
+    strategies:
+      - name: default
+
+  - name: multi-db-databricks
+    description: "Phase 11: Databricks Unity Catalog connector — row filters + column masks (Wave B)"
+    enabled: false
+    strategies:
+      - name: default
+
+  - name: multi-db-mongodb
+    description: "Phase 11: MongoDB 5.0+ connector — aggregation pipeline injection (special case)"
+    enabled: false
+    strategies:
+      - name: default
+
+  # Legacy alias retained for any callers using the old name.
   - name: multi-database
-    description: MySQL, SQL Server, Oracle, Snowflake, BigQuery, Databricks
+    description: "Phase 11: deprecated alias for multi-db — use multi-db instead"
     enabled: false
     strategies:
       - name: default

@@ -1,0 +1,67 @@
+# Values for native-policy-syncer Helm chart.
+# Override per environment via ArgoCD ApplicationSet or helm --set flags.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/governance-platform/native-policy-syncer
+  pullPolicy: IfNotPresent
+  tag: ""  # overridden by ArgoCD / CI with image digest
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # AWS IRSA annotation — override per environment.
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/native-policy-syncer-irsa
+  name: "native-policy-syncer"
+
+service:
+  port: 8085
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "1"
+    memory: "512Mi"
+
+networkPolicy:
+  enabled: true
+
+env:
+  HTTP_ADDR: ":8085"
+  DEPLOYMENT_ENVIRONMENT: "production"
+  OTEL_SAMPLING_RATE: "1.0"
+  SYNC_INTERVAL: "1h"
+  SYNC_CONCURRENCY: "4"
+  SYNC_TIMEOUT_PER_SOURCE: "5m"
+
+# Secrets read from Kubernetes Secret (populated by external-secrets-operator from Vault).
+secretRef:
+  name: native-policy-syncer-secrets
+  # Keys expected in the Secret:
+  #   DATABASE_URL              — control-plane PostgreSQL DSN
+  #   KAFKA_BROKERS             — audit pipeline
+  #   AUDIT_HMAC_KEY            — audit event HMAC
+  #   UNLEASH_API_TOKEN         — feature flag client
+  #   OTEL_EXPORTER_OTLP_ENDPOINT
+  #   VAULT_ADDR                — Vault server for DSN resolution
+  #   VAULT_ROLE                — Vault AppRole / K8s auth role
+
+otel:
+  enabled: true
+  endpoint: "http://otel-collector.observability:4317"
