@@ -1,0 +1,284 @@
+name: Phase 14 — Auto-Response & Break-Glass
+
+on:
+  push:
+    paths:
+      - "apps/auto-responder/**"
+      - "pkg/obligation/**"
+      - "apps/pdp/internal/playbook/**"
+      - "apps/pdp/internal/server/decide.go"
+      - "apps/proxy/internal/riskwatch/**"
+      - "migrations/0025_*.sql"
+      - "infra/helm/auto-responder/**"
+      - ".github/workflows/phase-14-auto-response-stepup.yml"
+  pull_request:
+    paths:
+      - "apps/auto-responder/**"
+      - "pkg/obligation/**"
+      - "apps/pdp/internal/playbook/**"
+      - "apps/pdp/internal/server/decide.go"
+      - "apps/proxy/internal/riskwatch/**"
+      - "migrations/0025_*.sql"
+      - "infra/helm/auto-responder/**"
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ── obligation package unit tests ───────────────────────────────────────────
+  obligation-unit:
+    name: pkg/obligation unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Run obligation tests
+        working-directory: pkg/obligation
+        run: go test ./... -v -race -count=1
+
+  # ── auto-responder unit tests ────────────────────────────────────────────────
+  auto-responder-unit:
+    name: auto-responder unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Run auto-responder unit tests
+        working-directory: apps/auto-responder
+        run: go test ./... -v -race -count=1 -short
+
+  # ── proxy riskwatch unit tests ───────────────────────────────────────────────
+  proxy-riskwatch-unit:
+    name: proxy riskwatch unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Run riskwatch tests
+        working-directory: apps/proxy
+        run: go test ./internal/riskwatch/... -v -race -count=1
+
+  # ── integration tests ────────────────────────────────────────────────────────
+  integration:
+    name: Integration tests (step-up + break-glass + mid-flight)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: governance_test
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 5
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+        run: |
+          go run ./scripts/migrate up --database-url="$DATABASE_URL" --migrations-dir=./migrations
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+          OBLIGATION_HMAC_KEY_B64: ${{ secrets.OBLIGATION_HMAC_KEY_B64 || 'YWFhYWJiYmJjY2NjZGRkZGVlZWVmZmZmZ2dnZ2hoaGg=' }}
+        working-directory: apps/auto-responder
+        run: go test ./... -v -race -count=1 -run Integration
+
+  # ── playbook evaluation scenario tests ──────────────────────────────────────
+  playbook-scenarios:
+    name: Playbook scenario tests (step-up / mask / block)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: governance_test
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 5s
+          --health-retries 10
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-retries 5
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+        run: |
+          go run ./scripts/migrate up --database-url="$DATABASE_URL" --migrations-dir=./migrations
+      - name: Score 71 → step_up obligation returned
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+          OBLIGATION_HMAC_KEY_B64: YWFhYWJiYmJjY2NjZGRkZGVlZWVmZmZmZ2dnZ2hoaGg=
+        working-directory: apps/auto-responder
+        run: go test ./... -run TestPlaybook_StepUpTier -v
+      - name: Score 86 → mask obligation returned
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+        working-directory: apps/auto-responder
+        run: go test ./... -run TestPlaybook_MaskTier -v
+      - name: Score 96 → block (DENY) returned
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+        working-directory: apps/auto-responder
+        run: go test ./... -run TestPlaybook_BlockTier -v
+      - name: Pause flag halts auto-response within 5s
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+        working-directory: apps/auto-responder
+        run: go test ./... -run TestPlaybook_PauseFlag -v -timeout 15s
+
+  # ── break-glass dual-approval + auto-revoke ──────────────────────────────────
+  breakglass:
+    name: Break-glass workflow tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: governance_test
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 5s
+          --health-retries 10
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+        run: |
+          go run ./scripts/migrate up --database-url="$DATABASE_URL" --migrations-dir=./migrations
+      - name: Two approvers required
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+        working-directory: apps/auto-responder
+        run: go test ./internal/breakglass/... -run TestBreakGlass_DualApproval -v
+      - name: Initiator cannot approve
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+        working-directory: apps/auto-responder
+        run: go test ./internal/breakglass/... -run TestBreakGlass_InitiatorCannotApprove -v
+      - name: Auto-revocation on TTL expiry
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+        working-directory: apps/auto-responder
+        run: go test ./internal/breakglass/... -run TestBreakGlass_AutoRevoke -v
+
+  # ── migration guard ──────────────────────────────────────────────────────────
+  migration-guard:
+    name: Migration guard (0025)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: governance_test
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 5s
+          --health-retries 10
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: Apply migrations including 0025
+        env:
+          DATABASE_URL: postgres://app:app@localhost:5432/governance_test?sslmode=disable
+        run: |
+          go run ./scripts/migrate up --database-url="$DATABASE_URL" --migrations-dir=./migrations
+      - name: Verify RLS on new tables
+        env:
+          PGPASSWORD: app
+        run: |
+          psql -h localhost -U app -d governance_test -c "
+            SELECT relname, relrowsecurity, relforcerowsecurity
+            FROM pg_class
+            WHERE relname IN (
+              'risk_playbooks','breakglass_sessions','breakglass_audit',
+              'step_up_obligations','auto_response_log'
+            )
+            ORDER BY relname;
+          " | grep -E "(t\s+t)" | wc -l | xargs -I{} test {} -eq 5
+
+  # ── helm lint ────────────────────────────────────────────────────────────────
+  helm-lint:
+    name: Helm lint — auto-responder
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: "3.14.4"
+      - name: Helm lint
+        run: helm lint infra/helm/auto-responder
+
+  # ── docker build ─────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker build — auto-responder
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (no push on PR)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/auto-responder/Dockerfile
+          push: false
+          tags: governance-platform/auto-responder:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

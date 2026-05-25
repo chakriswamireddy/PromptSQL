@@ -1,0 +1,98 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: anomaly-detector-alerts
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: anomaly-detector.pipeline
+      rules:
+        - alert: AnomalyDetectorKafkaLagHigh
+          expr: |
+            anomaly_detector_kafka_lag_seconds > 60
+          for: 5m
+          labels:
+            severity: warning
+            service: anomaly-detector
+          annotations:
+            summary: "Anomaly-detector Kafka consumer lag > 60s"
+            description: "Consumer lag is {{ $value | humanizeDuration }}. Risk scores may be stale, weakening ABAC enforcement."
+
+        - alert: AnomalyDetectorHighScoreRate
+          expr: |
+            rate(anomaly_detector_score_high_total[5m]) > 10
+          for: 5m
+          labels:
+            severity: warning
+            service: anomaly-detector
+          annotations:
+            summary: "High risk-score rate for tenant {{ $labels.tenant_id }}"
+            description: "{{ $value | humanize }}/s users scoring >= 70 for tenant {{ $labels.tenant_id }}. Possible mass anomaly or false-positive wave."
+
+        - alert: AnomalyDetectorRedisWriteErrors
+          expr: |
+            rate(anomaly_detector_redis_write_errors_total[5m]) > 0
+          for: 2m
+          labels:
+            severity: critical
+            service: anomaly-detector
+          annotations:
+            summary: "Risk scores not reaching Redis — PDP will serve stale or unknown scores"
+            description: "{{ $value | humanize }}/s Redis write errors. Risk-score enforcement is degraded."
+
+        - alert: AnomalyDetectorBaselineFlushErrors
+          expr: |
+            rate(anomaly_detector_baseline_flush_errors_total[15m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: anomaly-detector
+          annotations:
+            summary: "Baseline flush errors — state may be lost on restart"
+            description: "Baseline persistence to PostgreSQL is failing. A service restart may cause score regressions."
+
+        - alert: AnomalyDetectorKafkaPublishErrors
+          expr: |
+            rate(anomaly_detector_kafka_publish_errors_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: anomaly-detector
+          annotations:
+            summary: "Risk scored events not reaching risk.scored topic"
+            description: "Downstream SIEM consumers and Phase 14 auto-response will not see scored events."
+
+        - alert: AnomalyDetectorScoringLatencyHigh
+          expr: |
+            histogram_quantile(0.95, rate(anomaly_detector_scoring_duration_seconds_bucket[5m])) > 5
+          for: 5m
+          labels:
+            severity: warning
+            service: anomaly-detector
+          annotations:
+            summary: "Anomaly scoring p95 latency > 5s — SLO breach"
+            description: "p95 event-to-score latency is {{ $value | humanizeDuration }}. SLO target is < 5s."
+
+        - alert: AnomalyDetectorDown
+          expr: |
+            up{job="anomaly-detector"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: anomaly-detector
+          annotations:
+            summary: "Anomaly-detector instance is down"
+            description: "Instance {{ $labels.instance }} has been unreachable for 2 minutes. Risk scores will become stale; PDP falls back to 'unknown'."
+
+        - alert: AnomalyDetectorNoEventsConsumed
+          expr: |
+            rate(anomaly_detector_events_consumed_total[10m]) == 0
+          for: 15m
+          labels:
+            severity: warning
+            service: anomaly-detector
+          annotations:
+            summary: "No access events consumed in 15 minutes"
+            description: "The anomaly detector has not consumed any audit.access events. Kafka connectivity or topic configuration may be broken."

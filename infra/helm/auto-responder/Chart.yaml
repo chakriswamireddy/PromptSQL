@@ -1,0 +1,6 @@
+apiVersion: v2
+name: auto-responder
+description: "Phase 14: Auto-response playbooks, step-up MFA, and break-glass workflow"
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

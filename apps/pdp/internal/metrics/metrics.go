@@ -50,4 +50,15 @@ var (
 		Name: "pdp_redis_down",
 		Help: "1 if the Redis L2 cache is currently unreachable, 0 otherwise.",
 	})
+
+	// Phase 14: auto-response playbook metrics.
+	PlaybookActionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pdp_playbook_action_total",
+		Help: "Auto-response playbook actions triggered per action/tier/tenant.",
+	}, []string{"action", "tier", "tenant"})
+
+	StepUpIssuedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pdp_step_up_issued_total",
+		Help: "Step-up MFA obligation tokens issued.",
+	}, []string{"tenant"})
 )

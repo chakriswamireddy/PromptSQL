@@ -1,0 +1,153 @@
+name: Phase 13 — Anomaly Detection & Risk-Aware ABAC
+
+on:
+  push:
+    paths:
+      - "apps/anomaly-detector/**"
+      - "migrations/0024_anomaly_detection.up.sql"
+      - "apps/pdp/internal/server/server.go"
+      - "apps/pdp/internal/server/decide.go"
+      - ".github/workflows/phase-13-anomaly-detection.yml"
+  pull_request:
+    paths:
+      - "apps/anomaly-detector/**"
+      - "migrations/0024_anomaly_detection.up.sql"
+      - "apps/pdp/internal/server/server.go"
+      - "apps/pdp/internal/server/decide.go"
+
+env:
+  GO_VERSION: "1.22"
+  POSTGRES_DSN: "postgres://app_login_user:password@localhost:5432/governance?sslmode=disable"
+  REDIS_URL: "redis://localhost:6379/0"
+
+jobs:
+  # ── Unit tests ──────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: apps/anomaly-detector/go.mod
+
+      - name: Run baseline unit tests
+        working-directory: apps/anomaly-detector
+        run: go test ./internal/baseline/... -v -count=1 -race
+
+      - name: Run scoring unit tests
+        working-directory: apps/anomaly-detector
+        run: go test ./internal/scoring/... -v -count=1 -race
+
+      - name: Determinism replay test
+        working-directory: apps/anomaly-detector
+        run: go test ./internal/baseline/... -run TestZScoresDeterminism -v -count=3
+
+  # ── Integration tests ───────────────────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app_login_user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: governance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Apply migration 0024
+        run: |
+          PGPASSWORD=password psql -h localhost -U app_login_user -d governance \
+            -f migrations/0024_anomaly_detection.up.sql
+
+      - name: Run integration tests
+        working-directory: apps/anomaly-detector
+        env:
+          DATABASE_URL: ${{ env.POSTGRES_DSN }}
+          REDIS_URL:    ${{ env.REDIS_URL }}
+          INTEGRATION:  "true"
+        run: go test ./... -tags integration -v -count=1 -timeout 120s
+
+  # ── Migration guard ─────────────────────────────────────────────────────────
+  migration-guard:
+    name: Migration Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify migration is forward-only (no down file)
+        run: |
+          if ls migrations/0024_anomaly_detection.down.sql 2>/dev/null; then
+            echo "ERROR: down migration found — forward-only policy violated"
+            exit 1
+          fi
+          echo "Migration guard passed — no down file present"
+
+      - name: Verify migration has RLS FORCE on new tables
+        run: |
+          for table in risk_scores risk_baselines risk_allowlists risk_calibrations risk_events; do
+            if ! grep -q "FORCE ROW LEVEL SECURITY" migrations/0024_anomaly_detection.up.sql; then
+              echo "ERROR: RLS FORCE missing from migration"
+              exit 1
+            fi
+          done
+          echo "RLS FORCE guard passed"
+
+  # ── Helm lint ───────────────────────────────────────────────────────────────
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Lint anomaly-detector chart
+        run: helm lint infra/helm/anomaly-detector/
+
+  # ── Docker build ─────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build anomaly-detector image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/anomaly-detector/Dockerfile
+          push: false
+          tags: governance-platform/anomaly-detector:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

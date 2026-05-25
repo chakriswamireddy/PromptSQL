@@ -1,7 +1,9 @@
 go 1.22
 
 use (
+	./apps/anomaly-detector
 	./apps/api-gateway
+	./apps/auto-responder
 	./apps/pdp
 	./apps/proxy
 	./apps/proxy-rls-syncer
@@ -18,6 +20,7 @@ use (
 	./pkg/calcitepb
 	./pkg/connectors
 	./pkg/db
+	./pkg/obligation
 	./pkg/telemetry
 	./pkg/featureflags
 	./pkg/logging

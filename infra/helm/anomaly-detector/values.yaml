@@ -1,0 +1,52 @@
+replicaCount: 2
+
+image:
+  repository: governance-platform/anomaly-detector
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8090
+  metricsPort: 9109
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 60
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+env:
+  DEPLOYMENT_ENVIRONMENT: production
+  HTTP_ADDR: ":8090"
+  METRICS_ADDR: ":9109"
+  KAFKA_BROKERS: kafka:9092
+  KAFKA_CONSUMER_GROUP: anomaly-detector
+  KAFKA_TOPIC_AUDIT_ACCESS: audit.access.production
+  KAFKA_TOPIC_RISK_SCORED: risk.scored.production
+  BASELINE_WINDOW_DAYS: "90"
+  WARMUP_DAYS: "30"
+  DECAY_HALF_LIFE_HOURS: "1.0"
+  BASELINE_FLUSH_PERIOD: "60s"
+  BATCH_SIZE: "200"
+  BATCH_TIMEOUT: "500ms"
+  SCORE_TTL: "60s"
+  OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+  UNLEASH_URL: http://unleash:4242/api
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: ""

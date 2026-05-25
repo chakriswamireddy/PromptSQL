@@ -12,6 +12,9 @@ import {
   FlaskConical,
   Radio,
   Webhook,
+  ShieldAlert,
+  Siren,
+  ListTree,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -32,6 +35,9 @@ function navItems(slug: string): NavItem[] {
     { label: "Audit Trail", href: `${base}/audit`, icon: <Activity className="h-4 w-4" /> },
     { label: "Live Activity", href: `${base}/live`, icon: <Radio className="h-4 w-4" /> },
     { label: "Webhooks", href: `${base}/webhooks`, icon: <Webhook className="h-4 w-4" /> },
+    { label: "Risk & Anomaly", href: `${base}/risk`, icon: <ShieldAlert className="h-4 w-4" /> },
+    { label: "Playbooks", href: `${base}/playbooks`, icon: <ListTree className="h-4 w-4" /> },
+    { label: "Break-Glass", href: `${base}/breakglass`, icon: <Siren className="h-4 w-4" /> },
   ];
 }
 

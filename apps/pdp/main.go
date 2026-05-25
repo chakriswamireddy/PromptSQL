@@ -104,7 +104,7 @@ func main() {
 	versions := invalidation.NewVersionStore()
 	sub := invalidation.New(rdb, versions, nil, log)
 
-	// 7. Build gRPC server.
+	// 7. Build gRPC server (Phase 13: pass Redis for risk score lookup).
 	pdpServer := server.New(server.Config{
 		Store:    policyStore,
 		Cache:    decisionCache,
@@ -112,6 +112,7 @@ func main() {
 		Sub:      sub,
 		Versions: versions,
 		Log:      log,
+		Redis:    rdb,
 	})
 	// Wire the invalidation callback after the server is created.
 	versions2 := invalidation.NewVersionStore()

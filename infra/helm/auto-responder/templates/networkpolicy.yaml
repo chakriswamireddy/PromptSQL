@@ -1,0 +1,56 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "auto-responder.fullname" . }}
+  labels:
+    {{- include "auto-responder.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "auto-responder.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from the api-gateway and Prometheus scraper.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api-gateway
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8095
+          protocol: TCP
+        - port: 9095
+          protocol: TCP
+  egress:
+    # PostgreSQL.
+    - ports:
+        - port: 5432
+          protocol: TCP
+    # Redis.
+    - ports:
+        - port: 6379
+          protocol: TCP
+    # Kafka.
+    - ports:
+        - port: 9092
+          protocol: TCP
+    # OTel collector.
+    - ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+    # Unleash.
+    - ports:
+        - port: 4242
+          protocol: TCP
+    # DNS.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

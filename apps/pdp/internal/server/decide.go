@@ -4,6 +4,9 @@ import (
 	"context"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	pkgauth "github.com/governance-platform/pkg/auth"
 	pdpv1 "github.com/governance-platform/pkg/pdpv1"
 	pdpmetrics "github.com/governance-platform/pdp/internal/metrics"
 	"github.com/governance-platform/pdp/internal/cache"
@@ -24,6 +27,21 @@ func (s *Server) Decide(ctx context.Context, req *pdpv1.DecideRequest) (*pdpv1.D
 
 	ctx, span := startSpan(ctx, "pdp.Decide", sc.TenantID, sc.UserID, req.Action, req.Resource)
 	defer span.End()
+
+	// Phase 13: inject riskScore into SessionContext before policy evaluation.
+	sc.RiskScore = s.fetchRiskScore(ctx, sc.TenantID, sc.UserID)
+	if sc.RiskScore != nil {
+		span.SetAttributes(attribute.Int("pdp.risk_score", *sc.RiskScore))
+	}
+
+	// Phase 14: evaluate auto-response playbook for this risk score.
+	// Short-circuit BEFORE cache to ensure fresh playbook decisions.
+	if sc.RiskScore != nil && s.playbooks != nil {
+		if override := s.evaluatePlaybook(ctx, sc, req, *sc.RiskScore, span); override != nil {
+			go s.emitAudit(context.Background(), sc, req.Action, req.Resource, nil)
+			return override, nil
+		}
+	}
 
 	policies, versionStr, err := s.getPolicies(ctx, sc.TenantID)
 	if err != nil {
@@ -64,10 +82,78 @@ func (s *Server) Decide(ctx context.Context, req *pdpv1.DecideRequest) (*pdpv1.D
 	observeDecision(string(d.Effect), cacheLayer, sc.TenantID, start)
 	pdpmetrics.DecisionDuration.WithLabelValues(cacheLayer).Observe(time.Since(start).Seconds())
 
-	// Emit audit event asynchronously (Phase 5 pipeline wires up the real sink).
 	go s.emitAudit(context.Background(), sc, req.Action, req.Resource, d)
 
 	return result, nil
+}
+
+// evaluatePlaybook checks the tenant's risk playbook and returns an override
+// decision when the risk score triggers step-up, mask, or block actions.
+// Returns nil when normal policy evaluation should continue.
+func (s *Server) evaluatePlaybook(
+	ctx context.Context,
+	sc *pkgauth.SessionContext,
+	req *pdpv1.DecideRequest,
+	score int,
+	span trace.Span,
+) *pdpv1.Decision {
+	pb, err := s.playbooks.GetActive(ctx, sc.TenantID)
+	if err != nil || pb == nil {
+		return nil
+	}
+	result := pb.Evaluate(score)
+	span.SetAttributes(
+		attribute.String("pdp.playbook_action", result.Action),
+		attribute.String("pdp.risk_tier", result.Tier),
+	)
+	pdpmetrics.PlaybookActionTotal.WithLabelValues(result.Action, result.Tier, sc.TenantID).Inc()
+
+	switch result.Action {
+	case "block":
+		return &pdpv1.Decision{
+			Effect: pdpv1.Effect_EFFECT_DENY,
+			Reason: "auto_response: risk score exceeds block threshold",
+		}
+
+	case "step_up":
+		// Obligation: require MFA before the next query succeeds.
+		if s.obligation == nil {
+			// Obligation service not configured — degrade to allow with tag.
+			return nil
+		}
+		tokenStr, _, err := s.obligation.Issue(sc.TenantID, sc.UserID, sc.JTI, "risk_threshold", score)
+		if err != nil {
+			s.log.Error().Err(err).Msg("failed to issue obligation token")
+			return nil
+		}
+		return &pdpv1.Decision{
+			Effect: pdpv1.Effect_EFFECT_DENY,
+			Reason: "auto_response: step-up MFA required",
+			Obligations: []*pdpv1.Obligation{
+				{
+					Type: "require_mfa",
+					Params: map[string]string{
+						"obligation_token": tokenStr,
+						"mfa_window_sec":   "300",
+						"reason":           "risk_threshold",
+					},
+				},
+			},
+		}
+
+	case "mask":
+		// Return a permit with additional masking obligation injected.
+		return &pdpv1.Decision{
+			Effect: pdpv1.Effect_EFFECT_PERMIT,
+			Reason: "auto_response: heightened masking applied",
+			Obligations: []*pdpv1.Obligation{
+				{Type: "apply_heightened_mask", Params: map[string]string{}},
+			},
+		}
+
+	default:
+		return nil
+	}
 }
 
 // BulkDecide evaluates multiple decisions in a single round-trip.

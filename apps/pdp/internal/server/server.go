@@ -9,18 +9,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pkgauth "github.com/governance-platform/pkg/auth"
 	"github.com/governance-platform/pkg/logging"
+	"github.com/governance-platform/pkg/obligation"
 	pdpv1 "github.com/governance-platform/pkg/pdpv1"
 	pdpmetrics "github.com/governance-platform/pdp/internal/metrics"
 	"github.com/governance-platform/pdp/internal/cache"
 	"github.com/governance-platform/pdp/internal/invalidation"
+	"github.com/governance-platform/pdp/internal/playbook"
 	"github.com/governance-platform/pdp/internal/store"
 	"github.com/governance-platform/policy-engine/engine"
 )
@@ -38,6 +43,14 @@ type Server struct {
 	versions *invalidation.VersionStore
 	log      logging.Logger
 
+	// risk score fetch — Phase 13.
+	rdb         *redis.Client
+	riskSfGroup singleflight.Group
+
+	// Phase 14: playbook evaluation + obligation issuance.
+	playbooks  *playbook.Store
+	obligation *obligation.Service
+
 	// policyBundles holds compiled policy lists per tenant.
 	mu      sync.RWMutex
 	bundles map[string][]engine.Policy
@@ -51,20 +64,66 @@ type Config struct {
 	Sub      *invalidation.Subscriber
 	Versions *invalidation.VersionStore
 	Log      logging.Logger
+	// Redis is used for risk score lookup (Phase 13). May be nil.
+	Redis *redis.Client
+	// Pool is used by the Phase 14 playbook store.
+	Pool *pgxpool.Pool
+	// ObligationKey is the HMAC key for signing step-up obligation tokens.
+	// When nil/short, obligation issuance is skipped (degrades gracefully).
+	ObligationKey []byte
 }
 
 // New creates a Server and registers the invalidation callback.
 func New(cfg Config) *Server {
+	var obSvc *obligation.Service
+	if len(cfg.ObligationKey) >= 32 {
+		obSvc, _ = obligation.New(cfg.ObligationKey, 5*time.Minute)
+	}
 	s := &Server{
-		store:    cfg.Store,
-		cache:    cfg.Cache,
-		hmac:     cfg.HMAC,
-		sub:      cfg.Sub,
-		versions: cfg.Versions,
-		log:      cfg.Log,
-		bundles:  make(map[string][]engine.Policy),
+		store:      cfg.Store,
+		cache:      cfg.Cache,
+		hmac:       cfg.HMAC,
+		sub:        cfg.Sub,
+		versions:   cfg.Versions,
+		log:        cfg.Log,
+		rdb:        cfg.Redis,
+		obligation: obSvc,
+		bundles:    make(map[string][]engine.Policy),
+	}
+	if cfg.Pool != nil && cfg.Redis != nil {
+		s.playbooks = playbook.NewStore(cfg.Pool, cfg.Redis)
 	}
 	return s
+}
+
+// fetchRiskScore loads the current risk score for a user from Redis.
+// Returns nil if the anomaly-detection flag is off, Redis is unavailable,
+// or no score has been computed yet (warm-up).
+func (s *Server) fetchRiskScore(ctx context.Context, tenantID, userID string) *int {
+	if s.rdb == nil {
+		return nil
+	}
+	key := fmt.Sprintf("risk:score:%s:%s", tenantID, userID)
+
+	// singleflight collapses concurrent fetches for the same user.
+	result, err, _ := s.riskSfGroup.Do(key, func() (any, error) {
+		raw, err := s.rdb.Get(ctx, key).Bytes()
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			DecayedTotal int `json:"decayed_total"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, err
+		}
+		return payload.DecayedTotal, nil
+	})
+	if err != nil || result == nil {
+		return nil
+	}
+	score := result.(int)
+	return &score
 }
 
 // InvalidateCallback is called by the pub/sub subscriber when a tenant's policies change.

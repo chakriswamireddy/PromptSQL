@@ -1,0 +1,6 @@
+apiVersion: v2
+name: anomaly-detector
+description: "Phase 13: Statistical behavioral baseline & risk-score ABAC variable"
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

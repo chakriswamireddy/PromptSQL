@@ -1,0 +1,112 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: phase-14-auto-response-alerts
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: auto-response
+      interval: 30s
+      rules:
+
+        # Auto-block rate — high block rate may signal playbook misconfiguration
+        - alert: AutoResponseHighBlockRate
+          expr: |
+            sum(rate(pdp_playbook_action_total{action="block"}[5m])) by (tenant)
+            > 0.1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High auto-block rate for tenant {{ $labels.tenant }}"
+            description: "More than 6 users/min are being auto-blocked. Check playbook configuration or investigate coordinated anomaly."
+
+        # Step-up issued but never completed (stuck obligations)
+        - alert: StepUpObligationStuck
+          expr: |
+            sum(rate(pdp_step_up_issued_total[10m])) by (tenant) > 0
+            and
+            sum(rate(autoresponder_step_up_completed_total[10m])) by (tenant) == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Step-up MFA obligations issued but none completed for {{ $labels.tenant }}"
+            description: "Users may be stuck in the step-up flow. Check IdP connectivity."
+
+        # Break-glass session activated
+        - alert: BreakGlassSessionActivated
+          expr: |
+            sum(increase(autoresponder_breakglass_requests_total{status="active"}[5m])) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Break-glass session activated"
+            description: "A break-glass session has been approved and activated. All actions are being force-audited."
+
+        # Break-glass sessions overdue expiry (revoker may be down)
+        - alert: BreakGlassAutoRevokerDown
+          expr: |
+            (
+              time()
+              - max(autoresponder_break_glass_auto_revoke_total) by ()
+            ) > 300
+            and
+            count(autoresponder_breakglass_active_sessions > 0) > 0
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Break-glass auto-revoker may be down"
+            description: "Active sessions exist but no revocations have been processed in 5 minutes."
+
+        # Mid-flight termination spike
+        - alert: MidFlightTerminationsHigh
+          expr: |
+            sum(rate(pdp_playbook_action_total{action="block"}[1m])) > 0.5
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Mid-flight query terminations spiking"
+            description: "More than 30 queries/min are being terminated mid-stream due to risk escalation."
+
+        # Auto-responder service down
+        - alert: AutoResponderDown
+          expr: |
+            up{job="auto-responder"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Auto-responder service is down"
+            description: "Break-glass and playbook management are unavailable."
+
+        # High handler latency
+        - alert: AutoResponderHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(autoresponder_handler_duration_seconds_bucket[5m])) by (le, handler)
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Auto-responder handler p95 latency high ({{ $labels.handler }})"
+            description: "p95 handler latency exceeds 2 seconds for {{ $labels.handler }}."
+
+        # Obligation token errors
+        - alert: ObligationIssueErrors
+          expr: |
+            increase(pdp_step_up_issued_total[1m]) == 0
+            and
+            increase(pdp_playbook_action_total{action="step_up"}[1m]) > 5
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Step-up obligations triggered but no tokens issued"
+            description: "The obligation service may be misconfigured (OBLIGATION_HMAC_KEY_B64 missing)."

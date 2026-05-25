@@ -326,6 +326,95 @@ func main() {
 		log.Info().Str("upstream", orchestratorBase).Msg("ai-pep-graph enabled — /v1/ai/pep/* routes registered")
 	}
 
+	// ── Risk API routes (Phase 13 — Anomaly Detection & Risk-Aware ABAC) ────────
+	if ff.IsEnabled("anomaly-detection") {
+		anomalyBase := getEnvDefault("ANOMALY_DETECTOR_ADDR", "http://anomaly-detector:8090")
+		anomalyProxy := newReverseProxy(anomalyBase)
+
+		forwardRisk := func(h http.Handler) http.Handler {
+			return authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sess := auth.SessionFromContext(r.Context())
+				if sess == nil {
+					http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
+					return
+				}
+				r.Header.Set("X-Tenant-ID", sess.TenantID)
+				r.Header.Set("X-User-ID", sess.UserID)
+				h.ServeHTTP(w, r)
+			}))
+		}
+
+		mux.Handle("GET /v1/users/{userID}/risk-score",    forwardRisk(anomalyProxy))
+		mux.Handle("POST /v1/users/{userID}/risk-override", forwardRisk(anomalyProxy))
+		mux.Handle("GET /v1/risk/events",                  forwardRisk(anomalyProxy))
+		mux.Handle("GET /v1/risk/calibration",             forwardRisk(anomalyProxy))
+		mux.Handle("PUT /v1/risk/calibration",             forwardRisk(anomalyProxy))
+
+		log.Info().Str("upstream", anomalyBase).Msg("anomaly-detection enabled — /v1/risk/* routes registered")
+	}
+
+	// ── Auto-Response & Break-Glass routes (Phase 14) ─────────────────────────
+	if ff.IsEnabled("auto-response") {
+		autoResponderBase := getEnvDefault("AUTO_RESPONDER_ADDR", "http://auto-responder:8095")
+		autoResponderProxy := newReverseProxy(autoResponderBase)
+
+		forwardAutoResponse := func(h http.Handler) http.Handler {
+			return authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sess := auth.SessionFromContext(r.Context())
+				if sess == nil {
+					http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
+					return
+				}
+				r.Header.Set("X-Tenant-ID", sess.TenantID)
+				r.Header.Set("X-User-ID", sess.UserID)
+				r.Header.Set("X-User-Roles", joinRoles(sess.Roles))
+				h.ServeHTTP(w, r)
+			}))
+		}
+
+		// Break-glass session management.
+		mux.Handle("POST /v1/admin/{tenantSlug}/breakglass/request",
+			forwardAutoResponse(autoResponderProxy))
+		mux.Handle("POST /v1/admin/{tenantSlug}/breakglass/{id}/approve",
+			forwardAutoResponse(autoResponderProxy))
+		mux.Handle("POST /v1/admin/{tenantSlug}/breakglass/{id}/terminate",
+			forwardAutoResponse(autoResponderProxy))
+		mux.Handle("GET /v1/admin/{tenantSlug}/breakglass/sessions",
+			forwardAutoResponse(autoResponderProxy))
+		mux.Handle("GET /v1/admin/{tenantSlug}/breakglass/sessions/{id}",
+			forwardAutoResponse(autoResponderProxy))
+
+		// Playbook CRUD + simulator.
+		mux.Handle("POST /v1/admin/{tenantSlug}/playbooks",
+			forwardAutoResponse(autoResponderProxy))
+		mux.Handle("GET /v1/admin/{tenantSlug}/playbooks",
+			forwardAutoResponse(autoResponderProxy))
+		mux.Handle("POST /v1/admin/{tenantSlug}/playbooks/{id}/activate",
+			forwardAutoResponse(autoResponderProxy))
+		mux.Handle("POST /v1/admin/{tenantSlug}/playbooks/simulate",
+			forwardAutoResponse(autoResponderProxy))
+
+		// Step-up auth flow — authenticated, but no tenant path param needed.
+		mux.Handle("POST /v1/auth/step-up/initiate",
+			authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sess := auth.SessionFromContext(r.Context())
+				if sess == nil {
+					http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
+					return
+				}
+				r.Header.Set("X-Tenant-ID", sess.TenantID)
+				r.Header.Set("X-User-ID", sess.UserID)
+				r.Header.Set("X-Session-JTI", sess.JTI)
+				autoResponderProxy.ServeHTTP(w, r)
+			})))
+		mux.Handle("POST /v1/auth/step-up/complete",
+			authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				autoResponderProxy.ServeHTTP(w, r)
+			})))
+
+		log.Info().Str("upstream", autoResponderBase).Msg("auto-response enabled — /v1/admin/*/breakglass/* and /v1/auth/step-up/* routes registered")
+	}
+
 	// Catch-all for unimplemented v1 routes.
 	mux.HandleFunc("GET /v1/", handleNotImplemented)
 

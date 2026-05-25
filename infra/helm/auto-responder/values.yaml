@@ -1,0 +1,48 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/governance-platform/auto-responder
+  pullPolicy: IfNotPresent
+  tag: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 8095
+  metricsPort: 9095
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+env:
+  ADDR: ":8095"
+  METRICS_ADDR: ":9095"
+  ENVIRONMENT: "production"
+  MAX_BREAK_GLASS_DURATION_SEC: "3600"
+
+envFrom:
+  - secretRef:
+      name: auto-responder-secrets
+
+otel:
+  endpoint: "http://otel-collector:4318"
+  samplingRate: "0.1"
