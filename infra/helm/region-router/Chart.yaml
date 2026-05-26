@@ -1,0 +1,6 @@
+apiVersion: v2
+name: region-router
+description: Region Router — tenant-aware cross-region request routing with data residency enforcement
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

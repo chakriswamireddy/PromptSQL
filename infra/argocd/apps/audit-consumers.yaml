@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: audit-consumers
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: governance
+  sources:
+    - repoURL: https://github.com/governance-platform/infra
+      targetRevision: main
+      path: infra/helm/audit-clickhouse-sink
+      helm:
+        valueFiles:
+          - ../../values/audit-clickhouse-sink/{{ .Values.environment }}.yaml
+    - repoURL: https://github.com/governance-platform/infra
+      targetRevision: main
+      path: infra/helm/audit-worm-sink
+      helm:
+        valueFiles:
+          - ../../values/audit-worm-sink/{{ .Values.environment }}.yaml
+    - repoURL: https://github.com/governance-platform/infra
+      targetRevision: main
+      path: infra/helm/audit-chain-verifier
+      helm:
+        valueFiles:
+          - ../../values/audit-chain-verifier/{{ .Values.environment }}.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: governance-platform
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

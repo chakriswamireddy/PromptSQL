@@ -1,0 +1,141 @@
+# Server + ServerAuthorization resources for zero-trust intra-cluster policy.
+# These live in the governance-platform namespace.
+#
+# Pattern: every Service gets a Server resource; callers must have an explicit
+# ServerAuthorization. Unlisted callers are denied even if mTLS is valid.
+---
+# ── PDP gRPC (port 9092) ──────────────────────────────────────────────────────
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: pdp-grpc
+  namespace: governance-platform
+spec:
+  selector:
+    matchLabels:
+      app: pdp
+  port: 9092
+  proxyProtocol: gRPC
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: pdp-grpc-allow
+  namespace: governance-platform
+spec:
+  server:
+    name: pdp-grpc
+  client:
+    meshTLS:
+      serviceAccounts:
+        - name: api-gateway
+        - name: proxy
+        - name: ai-orchestrator
+        - name: admin-console
+        - name: auto-responder
+---
+# ── API Gateway HTTP (port 8080) ──────────────────────────────────────────────
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: api-gateway-http
+  namespace: governance-platform
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  port: 8080
+  proxyProtocol: HTTP/2
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: api-gateway-http-allow
+  namespace: governance-platform
+spec:
+  server:
+    name: api-gateway-http
+  client:
+    # Allow unauthenticated from the ingress (ALB to gateway); everything else mTLS.
+    unauthenticated: true
+---
+# ── Region Router HTTP (port 8080) ────────────────────────────────────────────
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: region-router-http
+  namespace: governance-platform
+spec:
+  selector:
+    matchLabels:
+      app: region-router
+  port: 8080
+  proxyProtocol: HTTP/1
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: region-router-http-allow
+  namespace: governance-platform
+spec:
+  server:
+    name: region-router-http
+  client:
+    meshTLS:
+      serviceAccounts:
+        - name: api-gateway
+---
+# ── Proxy pgproto3 (port 5432) ────────────────────────────────────────────────
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: proxy-pg
+  namespace: governance-platform
+spec:
+  selector:
+    matchLabels:
+      app: proxy
+  port: 5432
+  proxyProtocol: opaque  # PostgreSQL wire protocol; not HTTP
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: proxy-pg-allow
+  namespace: governance-platform
+spec:
+  server:
+    name: proxy-pg
+  client:
+    # DB clients connect through the API gateway token; allow any meshed pod.
+    meshTLS:
+      serviceAccounts:
+        - name: api-gateway
+---
+# ── Anomaly Detector REST (port 8080) ─────────────────────────────────────────
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: anomaly-detector-http
+  namespace: governance-platform
+spec:
+  selector:
+    matchLabels:
+      app: anomaly-detector
+  port: 8080
+  proxyProtocol: HTTP/1
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: anomaly-detector-http-allow
+  namespace: governance-platform
+spec:
+  server:
+    name: anomaly-detector-http
+  client:
+    meshTLS:
+      serviceAccounts:
+        - name: pdp
+        - name: api-gateway
+        - name: auto-responder

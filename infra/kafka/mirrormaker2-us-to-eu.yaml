@@ -1,0 +1,81 @@
+# Kafka MirrorMaker 2 — replicates audit topics from us-east-1 to eu-west-1.
+# Deployed as a KafkaConnector resource (Strimzi operator) in the eu-west-1 cluster.
+#
+# Topics replicated: audit.policy, audit.access, audit.system
+# Replication factor on target: 3 (matching source)
+# Offset translation: enabled so consumers can resume after failover without replay.
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaMirrorMaker2
+metadata:
+  name: us-to-eu-mirror
+  namespace: governance-platform
+spec:
+  version: 3.7.0
+  replicas: 2
+
+  connectCluster: eu-kafka  # the cluster where connector runs (target side)
+
+  clusters:
+    - alias: us-kafka
+      bootstrapServers: "${US_KAFKA_BOOTSTRAP}"  # injected by external-secrets-operator
+      tls:
+        trustedCertificates: []
+      authentication:
+        type: tls
+        certificateAndKey:
+          secretName: kafka-mirror-client-tls
+          certificate: user.crt
+          key: user.key
+    - alias: eu-kafka
+      bootstrapServers: "${EU_KAFKA_BOOTSTRAP}"
+      tls:
+        trustedCertificates: []
+      authentication:
+        type: tls
+        certificateAndKey:
+          secretName: kafka-mirror-client-tls
+          certificate: user.crt
+          key: user.key
+
+  mirrors:
+    - sourceCluster: us-kafka
+      targetCluster: eu-kafka
+      sourceConnector:
+        config:
+          replication.factor: 3
+          offset-syncs.topic.replication.factor: 3
+          sync.topic.acls.enabled: "false"
+          # Only mirror audit topics.
+          topics: "audit\\..*"
+          groups: ".*"
+          # Prefix mirrored topics with source alias to avoid collision.
+          replication.policy.class: org.apache.kafka.connect.mirror.IdentityReplicationPolicy
+
+      heartbeatConnector:
+        config:
+          heartbeats.topic.replication.factor: 3
+
+      checkpointConnector:
+        config:
+          checkpoints.topic.replication.factor: 3
+          sync.group.offsets.enabled: "true"
+          sync.group.offsets.interval.seconds: "60"
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 2
+      memory: 2Gi
+
+  template:
+    pod:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  strimzi.io/cluster: us-to-eu-mirror
+              topologyKey: kubernetes.io/hostname

@@ -1,0 +1,113 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: compliance-ga-alerts
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: compliance-service.slos
+      interval: 60s
+      rules:
+
+        # Service availability
+        - alert: ComplianceServiceDown
+          expr: up{job="compliance-service"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "Compliance service is down"
+            description: "compliance-service has been unreachable for >2 minutes. Access reviews, SIEM export, and GDPR processing are impaired."
+
+        # Access review overdue — SOC 2 CC6.1
+        - alert: AccessReviewOverdue
+          expr: |
+            (
+              count by (tenant_id) (
+                compliance_access_reviews_total{status="overdue"}
+              )
+            ) > 0
+          for: 1h
+          labels:
+            severity: warning
+            team: compliance
+          annotations:
+            summary: "Access review overdue for tenant {{ $labels.tenant_id }}"
+            description: "A quarterly access review is past its due date. This may affect SOC 2 CC6.2 evidence."
+
+        # Compliance evidence freshness
+        - alert: ComplianceEvidenceStale
+          expr: |
+            compliance_evidence_stale_total > 3
+          for: 30m
+          labels:
+            severity: warning
+            team: compliance
+          annotations:
+            summary: "Multiple compliance controls have stale evidence"
+            description: "{{ $value }} compliance evidence records are stale. Run collect-evidence.sh or check automated collection."
+
+        # GDPR SAR overdue (GDPR Art. 12 — 30-day deadline)
+        - alert: GDPRRequestOverdue
+          expr: |
+            compliance_gdpr_requests_overdue_total > 0
+          for: 1h
+          labels:
+            severity: critical
+            team: compliance
+          annotations:
+            summary: "GDPR Subject Access Request is overdue"
+            description: "{{ $value }} GDPR request(s) are past the 30-day deadline (Art. 12). Immediate action required."
+
+        # SCIM provisioning errors
+        - alert: SCIMProvisioningErrors
+          expr: |
+            rate(compliance_scim_errors_total[5m]) > 0.1
+          for: 10m
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: "SCIM provisioning error rate elevated"
+            description: "SCIM user provisioning is failing at {{ $value | humanizePercentage }}. SSO user sync may be degraded."
+
+        # Billing webhook failures — missed Stripe events cause subscription drift
+        - alert: BillingWebhookFailures
+          expr: |
+            rate(compliance_billing_webhook_errors_total[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Stripe billing webhook failures detected"
+            description: "Stripe webhook events are failing. Subscription state may be out of sync."
+
+        # High-error rate on compliance endpoints
+        - alert: ComplianceHighErrorRate
+          expr: |
+            rate(http_requests_total{job="compliance-service",status=~"5.."}[5m])
+            /
+            rate(http_requests_total{job="compliance-service"}[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Compliance service error rate > 5%"
+            description: "Error rate is {{ $value | humanizePercentage }}."
+
+        # Health score computation latency
+        - alert: HealthScoreComputationLate
+          expr: |
+            (time() - compliance_health_score_last_computed_timestamp) > 86400 * 2
+          for: 1h
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Customer health scores have not been computed in 48+ hours"
+            description: "Daily health score rollup may be failing. CS team visibility into customer health is degraded."

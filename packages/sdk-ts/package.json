@@ -1,0 +1,29 @@
+{
+  "name": "@platform/governance-sdk",
+  "version": "1.0.0",
+  "description": "AI-Native Authorization & Retrieval Governance Platform SDK for TypeScript/JavaScript",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": ["governance", "authorization", "pdp", "abac", "rbac", "audit"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "tsup": "^8.0.2",
+    "vitest": "^1.5.0"
+  },
+  "engines": { "node": ">=18" }
+}

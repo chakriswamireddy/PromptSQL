@@ -1,0 +1,45 @@
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: stateful
+spec:
+  template:
+    metadata:
+      labels:
+        governance.io/pool: stateful
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: governance-default
+
+      requirements:
+        # Stateful pods (Flink, ClickHouse if self-managed) must use on-demand.
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["r7i", "r6i", "r5"]
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["2xlarge", "4xlarge", "8xlarge"]
+
+      taints:
+        - key: governance.io/pool
+          value: stateful
+          effect: NoSchedule
+
+  disruption:
+    # Never consolidate stateful nodes proactively — let human operators drain.
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 300s
+
+  limits:
+    cpu: "64"
+    memory: "512Gi"
+
+  weight: 5

@@ -1,0 +1,62 @@
+replicaCount: 3
+
+image:
+  repository: ghcr.io/governance-platform/region-router
+  pullPolicy: IfNotPresent
+  tag: ""
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # IRSA annotation — override per environment.
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/region-router-irsa
+  name: "region-router"
+
+service:
+  httpPort: 8080
+  metricsPort: 9093
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 30
+  targetCPUUtilizationPercentage: 60
+
+podDisruptionBudget:
+  minAvailable: 2
+
+networkPolicy:
+  enabled: true
+  allowedNamespaceLabels:
+    - governance-platform/api-gateway
+
+env:
+  HTTP_ADDR: ":8080"
+  METRICS_ADDR: ":9093"
+  LOCAL_REGION: "us-east-1"  # override per environment
+  ALLOWED_REGIONS: "us-east-1,eu-west-1"
+  UPSTREAM_TIMEOUT: "5s"
+  LOG_LEVEL: "info"
+  DEPLOYMENT_ENVIRONMENT: "production"
+
+secretRef:
+  name: region-router-secrets
+  # Keys:
+  #   DATABASE_URL
+  #   UNLEASH_API_TOKEN
+  #   OTEL_EXPORTER_OTLP_ENDPOINT
+
+otel:
+  enabled: true
+  endpoint: "http://otel-collector.observability:4317"

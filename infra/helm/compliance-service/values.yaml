@@ -1,0 +1,77 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/org/platform/compliance-service
+  pullPolicy: IfNotPresent
+  tag: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    # IRSA: grants access to Secrets Manager and KMS for HIPAA CMK operations.
+    eks.amazonaws.com/role-arn: ""
+
+service:
+  type: ClusterIP
+  port: 8096
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+
+env:
+  PORT: "8096"
+  LOG_LEVEL: info
+  KAFKA_BROKERS: kafka-bootstrap:9092
+  REDIS_ADDR: redis-master:6379
+  UNLEASH_URL: http://unleash:4242
+  VAULT_ADDR: http://vault:8200
+
+envSecrets:
+  DATABASE_URL:
+    secretName: compliance-service-secrets
+    key: database-url
+  STRIPE_SECRET_KEY:
+    secretName: compliance-service-secrets
+    key: stripe-secret-key
+  STRIPE_WEBHOOK_SECRET:
+    secretName: compliance-service-secrets
+    key: stripe-webhook-secret
+  UNLEASH_TOKEN:
+    secretName: compliance-service-secrets
+    key: unleash-token
+
+otel:
+  enabled: true
+  endpoint: otel-collector:4317
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8096
+  initialDelaySeconds: 10
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8096
+  initialDelaySeconds: 5
+  periodSeconds: 10

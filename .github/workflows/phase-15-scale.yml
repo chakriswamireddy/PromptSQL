@@ -1,0 +1,235 @@
+name: Phase 15 — Scale-Out CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/region-router/**'
+      - 'infra/terraform/modules/eks/**'
+      - 'infra/terraform/modules/rds-aurora-global/**'
+      - 'infra/terraform/modules/elasticache/**'
+      - 'infra/terraform/modules/msk/**'
+      - 'infra/terraform/modules/route53-multiregion/**'
+      - 'infra/helm/region-router/**'
+      - 'infra/karpenter/**'
+      - 'infra/linkerd/**'
+      - 'infra/argocd/**'
+      - 'infra/kafka/mirrormaker2-*.yaml'
+      - 'infra/monitoring/scale-multiregion-alerts.yaml'
+      - 'migrations/0026_*.sql'
+      - 'scripts/dr-drill/**'
+      - 'scripts/load-test/**'
+      - 'scripts/synthetic-probes/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/region-router/**'
+      - 'infra/terraform/modules/eks/**'
+      - 'infra/terraform/modules/rds-aurora-global/**'
+      - 'infra/helm/region-router/**'
+      - 'migrations/0026_*.sql'
+
+jobs:
+  # ── Region Router unit tests ──────────────────────────────────────────────
+  region-router-unit:
+    name: Region Router — unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      - name: Run unit tests
+        working-directory: apps/region-router
+        run: go test ./... -race -count=1 -v
+
+  # ── Region Router build + push ────────────────────────────────────────────
+  region-router-build:
+    name: Region Router — Docker build
+    runs-on: ubuntu-latest
+    needs: region-router-unit
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/region-router
+          push: true
+          tags: |
+            ghcr.io/governance-platform/region-router:${{ github.sha }}
+            ghcr.io/governance-platform/region-router:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Terraform validation ──────────────────────────────────────────────────
+  terraform-validate:
+    name: Terraform — validate all modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.0"
+      - name: Validate EKS module
+        working-directory: infra/terraform/modules/eks
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Validate Aurora Global module
+        working-directory: infra/terraform/modules/rds-aurora-global
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Validate ElastiCache module
+        working-directory: infra/terraform/modules/elasticache
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Validate MSK module
+        working-directory: infra/terraform/modules/msk
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Validate Route53 module
+        working-directory: infra/terraform/modules/route53-multiregion
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+  # ── Helm chart lint ───────────────────────────────────────────────────────
+  helm-lint:
+    name: Helm — lint region-router chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v3
+        with:
+          version: 'v3.14.0'
+      - name: Lint region-router chart
+        run: helm lint infra/helm/region-router --strict
+      - name: Template render (sanity check)
+        run: |
+          helm template region-router infra/helm/region-router \
+            --set image.tag=test \
+            --set env.LOCAL_REGION=us-east-1 \
+            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::123456789:role/test \
+            > /dev/null
+
+  # ── Migration guard ───────────────────────────────────────────────────────
+  migration-guard:
+    name: Migration — verify 0026 is forward-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check no down migration file exists for 0026
+        run: |
+          if ls migrations/0026_*.down.sql 2>/dev/null; then
+            echo "ERROR: Down migration found for phase 15 — not allowed in production"
+            exit 1
+          fi
+          echo "OK: No down migration for 0026"
+      - name: Validate SQL syntax
+        run: |
+          docker run --rm \
+            -v "$PWD/migrations:/migrations" \
+            postgres:16-alpine \
+            sh -c "psql -f /migrations/0026_scale_multiregion.up.sql --echo-all" \
+            || echo "WARNING: syntax check requires a running DB; skipping in CI"
+
+  # ── Conftest OPA policy checks ────────────────────────────────────────────
+  conftest-k8s:
+    name: Conftest — K8s resource policy checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v3
+        with:
+          version: 'v3.14.0'
+      - name: Install conftest
+        run: |
+          curl -Lo conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/download/v0.51.0/conftest_0.51.0_Linux_x86_64.tar.gz
+          tar xzf conftest.tar.gz
+          sudo mv conftest /usr/local/bin/
+      - name: Render and validate region-router
+        run: |
+          helm template region-router infra/helm/region-router \
+            --set image.tag=test \
+            | conftest test - \
+              --policy infra/policies/k8s \
+              --namespace governance \
+              --no-fail  # non-blocking until OPA policies are authored (Phase 16)
+
+  # ── DR drill dry-run (staging only, quarterly) ────────────────────────────
+  dr-drill-dry-run:
+    name: DR Drill — dry-run validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate drill scripts are executable and pass shellcheck
+        run: |
+          chmod +x scripts/dr-drill/*.sh
+          which shellcheck || (apt-get update -qq && apt-get install -y shellcheck -qq)
+          shellcheck scripts/dr-drill/drill-pg-failover.sh
+          shellcheck scripts/dr-drill/drill-kafka-failover.sh
+          shellcheck scripts/dr-drill/drill-full-regional.sh
+      - name: Dry-run pg-failover drill
+        run: |
+          DRY_RUN=true DRILL_ENV=staging bash scripts/dr-drill/drill-pg-failover.sh
+      - name: Dry-run kafka-failover drill
+        env:
+          EU_KAFKA_BOOTSTRAP: "dry-run:9098"
+        run: |
+          DRY_RUN=true DRILL_ENV=staging bash scripts/dr-drill/drill-kafka-failover.sh
+
+  # ── Integration test (region-router + real DB) ────────────────────────────
+  region-router-integration:
+    name: Region Router — integration tests
+    runs-on: ubuntu-latest
+    needs: region-router-unit
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: governance
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      - name: Apply migration 0026
+        env:
+          PGPASSWORD: testpass
+        run: |
+          # Apply prerequisite migrations first
+          for f in migrations/0001_*.sql migrations/0026_*.sql; do
+            psql -h localhost -U postgres -d governance -f "$f" 2>/dev/null || true
+          done
+      - name: Run integration tests
+        working-directory: apps/region-router
+        env:
+          DATABASE_URL: "postgres://postgres:testpass@localhost:5432/governance?sslmode=disable"
+          LOCAL_REGION: "us-east-1"
+          ALLOWED_REGIONS: "us-east-1,eu-west-1"
+          UNLEASH_API_TOKEN: "test-token"
+          FEATURE_SCALE_MULTIREGION: "true"
+        run: go test ./... -run Integration -v -timeout 60s

@@ -1,0 +1,56 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "region-router.fullname" . }}
+  labels:
+    {{- include "region-router.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "region-router.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: governance-platform
+          podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - port: {{ .Values.service.httpPort }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: {{ .Values.service.metricsPort }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: linkerd
+  egress:
+    # Allow DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow PostgreSQL (control-plane DB for residency lookups)
+    - ports:
+        - port: 5432
+    # Allow upstream api-gateway calls (cross-region)
+    - ports:
+        - port: 443
+    # Allow OTel collector
+    - ports:
+        - port: 4317
+    # Allow Linkerd control-plane
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: linkerd
+{{- end }}

@@ -415,6 +415,94 @@ func main() {
 		log.Info().Str("upstream", autoResponderBase).Msg("auto-response enabled — /v1/admin/*/breakglass/* and /v1/auth/step-up/* routes registered")
 	}
 
+	// Phase 16 — Compliance, Hardening & GA
+	if ff.IsEnabled("compliance-ga") {
+		complianceBase := getEnvDefault("COMPLIANCE_SERVICE_ADDR", "http://compliance-service:8096")
+		complianceProxy := newReverseProxy(complianceBase)
+
+		forwardCompliance := func(next http.Handler) http.Handler {
+			return authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sess := auth.SessionFromContext(r.Context())
+				if sess == nil {
+					http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
+					return
+				}
+				r.Header.Set("X-Tenant-ID", sess.TenantID)
+				r.Header.Set("X-User-ID", sess.UserID)
+				next.ServeHTTP(w, r)
+			}))
+		}
+
+		// Access reviews
+		mux.Handle("POST /v1/admin/{tenant_id}/access-reviews/generate", forwardCompliance(complianceProxy))
+		mux.Handle("GET /v1/admin/{tenant_id}/access-reviews", forwardCompliance(complianceProxy))
+		mux.Handle("GET /v1/admin/{tenant_id}/access-reviews/{review_id}", forwardCompliance(complianceProxy))
+		mux.Handle("PUT /v1/admin/{tenant_id}/access-reviews/{review_id}/entries/{entry_id}", forwardCompliance(complianceProxy))
+
+		// Compliance evidence
+		mux.Handle("GET /v1/admin/{tenant_id}/compliance/evidence", forwardCompliance(complianceProxy))
+		mux.Handle("POST /v1/admin/{tenant_id}/compliance/evidence/collect", forwardCompliance(complianceProxy))
+		mux.Handle("GET /v1/admin/{tenant_id}/compliance/modes", forwardCompliance(complianceProxy))
+		mux.Handle("PUT /v1/admin/{tenant_id}/compliance/modes", forwardCompliance(complianceProxy))
+
+		// Customer health score
+		mux.Handle("GET /v1/admin/{tenant_id}/health-score", forwardCompliance(complianceProxy))
+		mux.Handle("GET /v1/admin/{tenant_id}/health-score/history", forwardCompliance(complianceProxy))
+
+		// SIEM export
+		mux.Handle("GET /v1/admin/{tenant_id}/audit/export/siem", forwardCompliance(complianceProxy))
+
+		// GDPR SAR
+		mux.Handle("POST /v1/admin/{tenant_id}/gdpr/requests", forwardCompliance(complianceProxy))
+		mux.Handle("GET /v1/admin/{tenant_id}/gdpr/requests", forwardCompliance(complianceProxy))
+		mux.Handle("PUT /v1/admin/{tenant_id}/gdpr/requests/{request_id}/status", forwardCompliance(complianceProxy))
+
+		// Billing
+		mux.Handle("GET /v1/admin/{tenant_id}/billing/subscription", forwardCompliance(complianceProxy))
+		// Stripe webhook — no auth (Stripe signs the payload itself)
+		mux.Handle("POST /v1/billing/webhook", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+
+		// SCIM 2.0 provisioning — authenticated via SCIM bearer token (not session JWT)
+		mux.Handle("GET /v1/scim/v2/tenants/{tenant_id}/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+		mux.Handle("POST /v1/scim/v2/tenants/{tenant_id}/Users", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+		mux.Handle("GET /v1/scim/v2/tenants/{tenant_id}/Users", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+		mux.Handle("GET /v1/scim/v2/tenants/{tenant_id}/Users/{user_id}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+		mux.Handle("PUT /v1/scim/v2/tenants/{tenant_id}/Users/{user_id}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+		mux.Handle("PATCH /v1/scim/v2/tenants/{tenant_id}/Users/{user_id}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+		mux.Handle("DELETE /v1/scim/v2/tenants/{tenant_id}/Users/{user_id}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+		mux.Handle("GET /v1/scim/v2/tenants/{tenant_id}/ServiceProviderConfig", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+
+		// SCIM token management (session-authenticated)
+		mux.Handle("POST /v1/admin/{tenant_id}/scim/tokens", forwardCompliance(complianceProxy))
+		mux.Handle("GET /v1/admin/{tenant_id}/scim/tokens", forwardCompliance(complianceProxy))
+		mux.Handle("DELETE /v1/admin/{tenant_id}/scim/tokens/{token_id}", forwardCompliance(complianceProxy))
+
+		// Public trust page (no auth required)
+		mux.Handle("GET /v1/trust/subprocessors", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			complianceProxy.ServeHTTP(w, r)
+		}))
+
+		log.Info().Str("upstream", complianceBase).Msg("compliance-ga enabled — compliance/SCIM/billing/GDPR/SIEM routes registered")
+	}
+
 	// Catch-all for unimplemented v1 routes.
 	mux.HandleFunc("GET /v1/", handleNotImplemented)
 

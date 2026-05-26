@@ -1,0 +1,195 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: scale-multiregion-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+    phase: "15"
+spec:
+  groups:
+    # ── Replication Lag ───────────────────────────────────────────────────────
+    - name: replication_lag
+      interval: 60s
+      rules:
+        - alert: AuroraReplicationLagHigh
+          expr: |
+            aws_aurora_aurora_global_db_replication_lag_milliseconds{job="cloudwatch-exporter"}
+            / 1000 > 60
+          for: 5m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "Aurora Global DB replication lag > 60s"
+            description: "Replication lag {{ $value | humanizeDuration }}. RPO target is 5 min. Investigate if lag continues to grow."
+            runbook: "docs/runbooks/dr-pg-primary-loss.md"
+
+        - alert: AuroraReplicationLagCritical
+          expr: |
+            aws_aurora_aurora_global_db_replication_lag_milliseconds{job="cloudwatch-exporter"}
+            / 1000 > 240
+          for: 2m
+          labels:
+            severity: critical
+            team: sre
+          annotations:
+            summary: "Aurora replication lag > 4 min — RPO breach imminent"
+            description: "Lag {{ $value | humanizeDuration }}. Failover is BLOCKED until lag drops below 5 min RPO target."
+            runbook: "docs/runbooks/dr-pg-primary-loss.md"
+
+        - alert: KafkaMirrorMakerLagHigh
+          expr: |
+            kafka_consumer_group_lag{group=~"mirror-.*"} > 10000
+          for: 10m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "MirrorMaker 2 consumer lag > 10,000 messages"
+            description: "MirrorMaker group {{ $labels.group }} lag={{ $value }}. Audit replication to secondary region is falling behind."
+            runbook: "docs/runbooks/dr-kafka-loss.md"
+
+    # ── Region Router ──────────────────────────────────────────────────────────
+    - name: region_router
+      rules:
+        - alert: RegionRouterResidencyViolationsHigh
+          expr: |
+            sum(rate(region_router_residency_violations_total[5m])) > 1
+          for: 2m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "Region router is rejecting > 1 req/s for residency violations"
+            description: "Tenants are hitting the wrong regional endpoint. Check client routing configuration or Route53 health checks."
+
+        - alert: RegionRouterErrorRateHigh
+          expr: |
+            sum(rate(http_requests_total{job="region-router",code=~"5.."}[5m]))
+            / sum(rate(http_requests_total{job="region-router"}[5m])) > 0.01
+          for: 3m
+          labels:
+            severity: critical
+            team: sre
+          annotations:
+            summary: "Region router error rate > 1%"
+            description: "Error rate {{ $value | humanizePercentage }} on region-router. Upstream connectivity may be degraded."
+
+        - alert: RegionRouterLatencyHigh
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(region_router_route_latency_seconds_bucket[5m])) by (le, target_region)
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "Region router p99 latency > 500ms to {{ $labels.target_region }}"
+            description: "Cross-region hop is adding {{ $value | humanizeDuration }}. Investigate upstream ALB or PrivateLink."
+
+    # ── Kubernetes Cluster Health ──────────────────────────────────────────────
+    - name: k8s_cluster_health
+      rules:
+        - alert: KarpenterNodeProvisioningFailed
+          expr: |
+            increase(karpenter_nodes_total{reason="failed"}[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "Karpenter failed to provision nodes"
+            description: "Check Karpenter logs: kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter"
+
+        - alert: PodDisruptionBudgetViolation
+          expr: |
+            kube_poddisruptionbudget_status_pod_disruptions_allowed == 0
+          for: 10m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "PDB {{ $labels.poddisruptionbudget }} has 0 disruptions allowed"
+            description: "Drains and rolling updates are blocked. Check pod health in namespace {{ $labels.namespace }}."
+
+        - alert: HPAMaxReplicasReached
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas
+            == kube_horizontalpodautoscaler_spec_max_replicas
+          for: 10m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "HPA {{ $labels.horizontalpodautoscaler }} at max replicas"
+            description: "Autoscaler cannot scale further. Consider increasing maxReplicas or reducing load."
+
+    # ── DR Readiness ───────────────────────────────────────────────────────────
+    - name: dr_readiness
+      rules:
+        - alert: DRDrillOverdue
+          expr: |
+            (time() - max(
+              (timestamp(dr_drill_last_success_timestamp_seconds) or vector(0))
+            )) / 86400 > 95
+          for: 1h
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "DR drill is overdue (> 95 days since last successful drill)"
+            description: "Phase 15 requires quarterly drills. Schedule one immediately."
+
+        - alert: SyntheticProbeDown
+          expr: |
+            probe_pdp_ok == 0
+          for: 3m
+          labels:
+            severity: critical
+            team: sre
+          annotations:
+            summary: "PDP synthetic probe failing in {{ $labels.region }}"
+            description: "End-to-end health check for PDP in {{ $labels.region }} is failing. Investigate immediately."
+            runbook: "docs/runbooks/pdp.md"
+
+        - alert: SyntheticProbeLatencyHigh
+          expr: |
+            probe_pdp_latency_ms > 1000
+          for: 5m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "PDP probe latency > 1000ms in {{ $labels.region }}"
+            description: "Probe latency {{ $value }}ms. Service degradation in {{ $labels.region }}."
+
+    # ── Cost ──────────────────────────────────────────────────────────────────
+    - name: cost_controls
+      rules:
+        - alert: KarpenterSpotInterruptionSurge
+          expr: |
+            increase(karpenter_interruption_received_total[30m]) > 10
+          for: 5m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "Karpenter spot interruptions > 10 in 30 min"
+            description: "High spot interruption rate may destabilize stateless workloads. Check on-demand fallback."
+
+        - alert: EKSNodeCPUOverprovisioned
+          expr: |
+            avg_over_time(
+              (sum(kube_pod_container_resource_requests{resource="cpu",container!=""})
+               / sum(machine_cpu_cores))[1h:]
+            ) < 0.2
+          for: 2h
+          labels:
+            severity: info
+            team: sre
+          annotations:
+            summary: "Cluster CPU utilization < 20% — may be over-provisioned"
+            description: "Consider reducing Karpenter nodepool limits or HPA minReplicas to reduce cost."

@@ -1,0 +1,52 @@
+# Linkerd control-plane Helm values (linkerd/linkerd2 chart).
+# Install: helm upgrade --install linkerd linkerd/linkerd2 -n linkerd --create-namespace -f infra/linkerd/values.yaml
+
+controllerReplicas: 3
+
+# Enable high availability mode: spreads control-plane across AZs.
+enablePodAntiAffinity: true
+
+# Identity (mTLS certificate issuance)
+identity:
+  issuer:
+    scheme: kubernetes.io/tls  # trust anchor injected via cert-manager or Vault PKI
+
+# Proxy defaults — applied to every meshed pod.
+proxy:
+  resources:
+    cpu:
+      request: 10m
+      limit: 1
+    memory:
+      request: 20Mi
+      limit: 250Mi
+  logLevel: warn
+  # Linkerd proxy emits Prometheus metrics on :4191
+  ports:
+    admin: 4191
+
+# Disable automatic pod injection at the cluster level; enable per-namespace via annotation.
+proxyInjector:
+  namespaceSelector:
+    matchExpressions:
+      - key: linkerd.io/inject
+        operator: In
+        values: ["enabled"]
+
+# Destination controller HA
+destinationReplicas: 3
+
+# Proxy injector HA
+proxyInjectorReplicas: 3
+
+# Keep resource limits lean for the control plane.
+controllerResources:
+  cpu:
+    request: 100m
+    limit: 1
+  memory:
+    request: 50Mi
+    limit: 250Mi
+
+# Telemetry — Linkerd Viz is deployed separately via linkerd viz install.
+# This values file only covers the control plane.

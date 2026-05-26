@@ -32,7 +32,8 @@
       "Bash(Select-String \"0021\")",
       "Bash(git -C \"c:/Users/chakri wayne/Desktop/NOSQL\" status)",
       "Bash(git -C \"c:/Users/chakri wayne/Desktop/NOSQL\" log --oneline -3)",
-      "Bash(xargs -I {} bash -c \"echo '=== {} ===' && head -50 {}\")"
+      "Bash(xargs -I {} bash -c \"echo '=== {} ===' && head -50 {}\")",
+      "Bash(Select-Object -ExpandProperty Name)"
     ],
     "additionalDirectories": [
       "c:\\Users\\chakri wayne\\.claude\\projects\\c--Users-chakri-wayne\\memory",
